@@ -17,6 +17,8 @@ import com.google.api.client.util.store.FileDataStoreFactory;
 import com.google.api.services.drive.Drive;
 import com.google.api.services.drive.Drive.Files.List;
 import com.google.api.services.drive.DriveScopes;
+import com.google.api.services.drive.model.ChildList;
+import com.google.api.services.drive.model.ChildReference;
 import com.google.api.services.drive.model.File;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
@@ -35,50 +37,9 @@ import org.apache.commons.codec.digest.DigestUtils;
 
 public class DriveSample {
 
-  /**
-   * Be sure to specify the name of your application. If the application name is {@code null} or
-   * blank, the application will log a warning. Suggested format is "MyCompany-ProductName/1.0".
-   */
-  private static final String APPLICATION_NAME = "GDrive";
-
-  /**
-   * Global instance of the {@link DataStoreFactory}. The best practice is to make it a single
-   * globally shared instance across your application.
-   */
-  private static FileDataStoreFactory dataStoreFactory;
-
-  /** Global instance of the HTTP transport. */
-  private static HttpTransport httpTransport;
-
-  /** Global instance of the JSON factory. */
-  private static final JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
-
-  /** Global Drive API client. */
-  private static Drive drive;
-
-  /** Authorizes the installed application to access user's protected data. */
-  private static Credential authorize() throws Exception {
-    // set up authorization code flow
-    GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(
-        httpTransport, JSON_FACTORY, "930897891601-4mbqrmuu5osvk7j3vlkv8k59liot620f.apps.googleusercontent.com", "v18DcOoqIvmVgPVtisCijpTV",
-        Collections.singleton(DriveScopes.DRIVE)).setDataStoreFactory(dataStoreFactory)
-        .build();
-    // authorize
-    return new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
-  }
-
   public static void main(String[] args) {
 
     try {
-      httpTransport = GoogleNetHttpTransport.newTrustedTransport();
-
-      dataStoreFactory = new FileDataStoreFactory(new java.io.File(System.getProperty("user.home"), ".googlefs"));
-      // authorization
-      Credential credential = authorize();
-      // set up the global Drive instance
-      drive = new Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName(
-          APPLICATION_NAME).build();
-
 
 /*	  List request = drive.files().list();
       do {
@@ -94,10 +55,60 @@ public class DriveSample {
           }
       } while (request.getPageToken() != null
               && request.getPageToken().length() > 0);
+              
+              
+      
   */    
+    	
+    	
+    	
+    	
+    	
+    	
+    	
+    	
+		HttpTransport httpTransport = GoogleNetHttpTransport.newTrustedTransport();
+
+		FileDataStoreFactory dataStoreFactory = new FileDataStoreFactory(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "auth"));
+		JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
+		GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(httpTransport, JSON_FACTORY, "930897891601-4mbqrmuu5osvk7j3vlkv8k59liot620f.apps.googleusercontent.com", "v18DcOoqIvmVgPVtisCijpTV", Collections.singleton(DriveScopes.DRIVE)).setDataStoreFactory(dataStoreFactory).build();
+		Credential credential = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
+		Drive drive = new Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
+		
+		
+
+        
+        
+		
+		
+//    	File f = drive.files().get("0B9V4qybqtJE-Y0t6bXBhb3hieHc").execute();
+    	
+/*    	Drive.Children.List list = drive.children().list("0B9V4qybqtJE-Y0t6bXBhb3hieHc");
+    	
+
+        do {
+            try {
+                ChildList files = list.execute();
+                for(ChildReference child : files.getItems())
+                {
+                	File f = drive.files().get(child.getId()).execute();
+                	System.out.println(f.getTitle());
+                }
+                list.setPageToken(files.getNextPageToken());
+            } catch (IOException e) {
+                System.out.println("An error occurred: " + e);
+                list.setPageToken(null);
+            }
+        } while (list.getPageToken() != null
+                && list.getPageToken().length() > 0);
+        
+        
       
       for(String file : args)
-    	  uploadFile(new java.io.File(file));
+    	  uploadFile(drive, new java.io.File(file));
+    	  
+    	  */
+    	  
       // run commands
 //      File uploadedFile = uploadFile(false);
 //      File updatedFile = updateFileWithTestSuffix(uploadedFile.getId());
@@ -114,7 +125,7 @@ public class DriveSample {
   }
 
   /** Uploads a file using either resumable or direct media upload. */
-  private static File uploadFile(java.io.File fileToUpload) throws IOException {
+  private static File uploadFile(Drive drive, java.io.File fileToUpload) throws IOException {
 	String type = Files.probeContentType(Paths.get(fileToUpload.getAbsolutePath()));
 	System.out.println("Uploading "+fileToUpload+" of type "+type);
 	File newFile = new File();

@@ -36,5 +36,26 @@
 	<classpathentry kind="lib" path="libs/pax-web-service-0.5.1.jar"/>
 	<classpathentry kind="lib" path="libs/servlet-api.jar"/>
 	<classpathentry kind="lib" path="libs/commons-codec-1.7.jar"/>
+	<classpathentry kind="lib" path="libs/jimboxutilities.jar"/>
+	<classpathentry kind="lib" path="libs/derby.jar"/>
+	<classpathentry kind="lib" path="libs/derbyclient.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_cs.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_de_DE.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_es.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_fr.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_hu.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_it.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_ja_JP.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_ko_KR.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_pl.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_pt_BR.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_ru.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_zh_CN.jar"/>
+	<classpathentry kind="lib" path="libs/derbyLocale_zh_TW.jar"/>
+	<classpathentry kind="lib" path="libs/derbynet.jar"/>
+	<classpathentry kind="lib" path="libs/derbyrun.jar"/>
+	<classpathentry kind="lib" path="libs/derbytools.jar"/>
+	<classpathentry kind="lib" path="libs/commons-dbcp-1.4.jar"/>
+	<classpathentry kind="lib" path="libs/commons-pool-1.5.5.jar"/>
 	<classpathentry kind="output" path="bin"/>
 </classpath>
