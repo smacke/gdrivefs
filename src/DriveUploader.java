@@ -32,6 +32,8 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import org.apache.commons.codec.digest.DigestUtils;
 
@@ -52,10 +54,12 @@ public class DriveUploader
 			Credential credential = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
 			Drive drive = new Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
 
+			ExecutorService worker = Executors.newFixedThreadPool(10);
+			
 			for(String file : args)
-				uploadFile(drive, new java.io.File(file));
+				scheduleTask(worker, drive, new java.io.File(file));
 			for(java.io.File file : new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "uploads").listFiles())
-				if(!file.isDirectory()) uploadFile(drive, file);
+				if(!file.isDirectory()) scheduleTask(worker, drive, file);
 
 			return;
 		}
@@ -68,6 +72,25 @@ public class DriveUploader
 			t.printStackTrace();
 		}
 		System.exit(1);
+	}
+	
+	private static void scheduleTask(ExecutorService worker, final Drive drive, final java.io.File file)
+	{
+		worker.execute(new Runnable()
+		{
+			@Override
+			public void run()
+			{
+				try
+				{
+					uploadFile(drive, file);
+				}
+				catch(IOException e)
+				{
+					e.printStackTrace();
+				}
+			}
+		});
 	}
 
 	/** Uploads a file using either resumable or direct media upload. */
