@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.NoSuchElementException;
 
 import org.apache.commons.codec.digest.DigestUtils;
+import org.apache.commons.io.FileUtils;
 
 import com.google.api.client.http.GenericUrl;
 import com.google.api.client.http.HttpRequest;
@@ -32,6 +33,7 @@ public class File
 	
 	// Cache (null indicates field must be fetched from db)
 	String title;
+	String fileMd5;
 	Boolean isDirectory;
 	Long size;
 	Timestamp modifiedTime;
@@ -77,6 +79,7 @@ public class File
 		isDirectory = row.getString("MD5HEX") == null;
 		size = row.getLong("SIZE");
 		modifiedTime = row.getTimestamp("MTIME");
+		fileMd5 = row.getString("MD5HEX");
 	}
 	
 	public void refresh() throws IOException
@@ -116,7 +119,6 @@ public class File
 		if(children != null) return children;
 		
 		children = new ArrayList<File>();
-		
 		if(!isDirectory()) return children;
 		
 		try
@@ -133,7 +135,6 @@ public class File
 		try
 		{
 			com.google.api.services.drive.Drive.Files.List lst = drive.getRemote().files().list().setQ("'"+id+"' in parents and trashed=false");
-
 			do
 			{
 				try
@@ -189,6 +190,13 @@ public class File
 		return modifiedTime;
 	}
 	
+	public String getMd5Checksum() throws IOException
+	{
+		if(isDirectory()) return null;
+		if(fileMd5 == null) readBasicMetadata();
+		return fileMd5;
+	}
+	
 	private static final String MIME_FOLDER = "application/vnd.google-apps.folder";
 	public File mkdir(String name) throws IOException
 	{
@@ -199,7 +207,7 @@ public class File
 		directory.setParents(Arrays.asList(new ParentReference().setId(id)));
 		
 		directory = drive.getRemote().files().insert(directory).execute();
-		children = null;
+		clearChildrenCache();
 
 	    return drive.getFile(directory);
 	}
@@ -209,36 +217,32 @@ public class File
 	
     public byte[] read(final long size, final long offset)
     {
-            com.google.api.services.drive.model.File remoteFile;
-            try
-            {
-                    remoteFile = drive.getRemote().files().get(id).execute();
-                    String fileMd5 = remoteFile.getMd5Checksum();
-                    
-                    byte[] data = downloadFragment(fileMd5, (int)offset, (int)(offset+size));
-                    if(data.length != size) throw new Error("expected: "+size+" actual: "+data.length+" "+new String(data));
-                    return data;
-                    /*
-                     * 
-                    int fragmentPointer = (int)(offset%FRAGMENT_SIZE);
-                    int outputPointer = 0;
-                    
-                    while(outputPointer != size)
-                    {
-                            byte[] fragmentData = getFragment(fileMd5, (int)((offset+outputPointer)/FRAGMENT_SIZE));
-                            System.arraycopy(fragmentData, fragmentPointer, output, outputPointer, (int)Math.min(size-outputPointer, FRAGMENT_SIZE)-fragmentPointer);
-                            outputPointer = outputPointer+(int)(Math.min(size-outputPointer, FRAGMENT_SIZE)-fragmentPointer);
-                            fragmentPointer = 0;
-                    }
-                    return output;
-                    */
-            }
-            catch(IOException e)
-            {
-                    e.printStackTrace();
-                    throw new RuntimeException(e);
-            }
-    }
+		try
+		{
+			byte[] data = downloadFragment(getMd5Checksum(), (int) offset, (int) (offset + size));
+			if(data.length != size) throw new Error("expected: " + size + " actual: " + data.length + " " + new String(data));
+			return data;
+			/*
+			 * 
+			 * int fragmentPointer = (int)(offset%FRAGMENT_SIZE);
+			 * int outputPointer = 0;
+			 * 
+			 * while(outputPointer != size)
+			 * {
+			 * byte[] fragmentData = getFragment(fileMd5, (int)((offset+outputPointer)/FRAGMENT_SIZE));
+			 * System.arraycopy(fragmentData, fragmentPointer, output, outputPointer, (int)Math.min(size-outputPointer, FRAGMENT_SIZE)-fragmentPointer);
+			 * outputPointer = outputPointer+(int)(Math.min(size-outputPointer, FRAGMENT_SIZE)-fragmentPointer);
+			 * fragmentPointer = 0;
+			 * }
+			 * return output;
+			 */
+		}
+		catch(IOException e)
+		{
+			e.printStackTrace();
+			throw new RuntimeException(e);
+		}
+	}
 
     
     
@@ -247,27 +251,28 @@ public class File
     
     
     protected byte[] downloadFragment(String fileMd5, int startPosition, int endPosition) throws IOException
-    {
-            if(startPosition > endPosition) throw new IllegalArgumentException("startPosition ("+startPosition+") must not be greater than endPosition ("+endPosition+")");
-            if(startPosition > endPosition) throw new IllegalArgumentException("startPosition ("+startPosition+") must not be greater than endPosition ("+endPosition+")");
-            if(startPosition == endPosition) return new byte[0];
+	{
+    	System.out.println("Downloading "+fileMd5+" "+startPosition+" "+endPosition);
+		if(startPosition > endPosition) throw new IllegalArgumentException("startPosition (" + startPosition + ") must not be greater than endPosition (" + endPosition + ")");
+		if(startPosition > endPosition) throw new IllegalArgumentException("startPosition (" + startPosition + ") must not be greater than endPosition (" + endPosition + ")");
+		if(startPosition == endPosition) return new byte[0];
             
         ByteArrayOutputStream out = new ByteArrayOutputStream();
 
-        HttpRequestFactory requestFactory = drive.transport.createRequestFactory(drive.getRemote().getRequestFactory().getInitializer());
+		HttpRequestFactory requestFactory = drive.transport.createRequestFactory(drive.getRemote().getRequestFactory().getInitializer());
 
-                // prepare the GET request
-                HttpRequest request = requestFactory.buildGetRequest(new GenericUrl(drive.getDatabase().getStrings("SELECT DOWNLOADURL FROM FILES WHERE MD5HEX=?", fileMd5).get(0)));
-                // set Range header (if necessary)
-                  request.getHeaders().setRange("bytes="+(startPosition)+"-"+(endPosition-1));
-                HttpResponse response = request.execute();
-                try {
-                  IOUtils.copy(response.getContent(), out);
-                        System.out.println(response);
-                } finally {
-                  response.disconnect();
-                }
-        
+		HttpRequest request = requestFactory.buildGetRequest(new GenericUrl(drive.getDatabase().getStrings("SELECT DOWNLOADURL FROM FILES WHERE MD5HEX=?", fileMd5).get(0)));
+		request.getHeaders().setRange("bytes=" + (startPosition) + "-" + (endPosition - 1));
+		HttpResponse response = request.execute();
+		try
+		{
+			IOUtils.copy(response.getContent(), out);
+		}
+		finally
+		{
+			response.disconnect();
+		}
+
         byte[] bytes = out.toByteArray();
         
         storeFragment(fileMd5, startPosition, bytes);
@@ -307,11 +312,17 @@ public class File
     
     protected void storeFragment(String fileMd5, long position, byte[] data) throws IOException
     {
-    	drive.getDatabase().execute("INSERT INTO FRAGMENTS(FILEMD5, CHUNKMD5, STARTBYTE, ENDBYTE) VALUES(?,?,?,?)", fileMd5, DigestUtils.md5Hex(data), position, position+data.length);
-            RandomAccessFile file = new RandomAccessFile(new java.io.File(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "cache"), fileMd5), "rw");
-            file.seek(position);
-            file.write(data);
-            file.close();
+    	String chunkMd5 = DigestUtils.md5Hex(data);
+		drive.getDatabase().execute("INSERT INTO FRAGMENTS(FILEMD5, CHUNKMD5, STARTBYTE, ENDBYTE) VALUES(?,?,?,?)", fileMd5, chunkMd5, position, position + data.length);
+		FileUtils.writeByteArrayToFile(getCacheFile(chunkMd5), data);
+    }
+    
+    private java.io.File getCacheFile(String chunkMd5)
+    {
+    	java.io.File cacheFile = new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "cache");
+		for(byte c : chunkMd5.getBytes()) cacheFile = new java.io.File(cacheFile, Character.toString((char)c));
+		cacheFile = new java.io.File(cacheFile, chunkMd5);
+		return cacheFile;
     }
     
     public void setTitle(String title) throws IOException

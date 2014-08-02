@@ -189,29 +189,18 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int read(final String path, final ByteBuffer buffer, final long size, final long offset, final FileInfoWrapper info)
 	{
-		/*
-		final MemoryPath p = getPath(path);
-		if (p == null) {
-			return -ErrorCodes.ENOENT();
-		}
-		if (!(p instanceof MemoryFile)) {
-			return -ErrorCodes.EISDIR();
-		}
-		return ((MemoryFile) p).read(buffer, size, offset);
-		*/
-		
 		try
 		{
-			for(File f : getCachedPath(drive, path).getChildren())
-				if(f.getTitle().equals(path.substring(1)))
-				{
-					// Error checking
-					if(f.isDirectory()) return -ErrorCodes.EISDIR();
-					
-					byte[] bytes = f.read(size, offset);
-					buffer.put(bytes);
-					return bytes.length;
-				}
+			File f = getCachedPath(drive, path);
+	
+			if(f.isDirectory()) return -ErrorCodes.EISDIR();
+
+			byte[] bytes = f.read(size, offset);
+			buffer.put(bytes);
+			return bytes.length;
+		}
+		catch(NoSuchElementException e)
+		{
 			return -ErrorCodes.ENOENT();
 		}
 		catch(IOException e)
