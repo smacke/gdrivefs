@@ -342,15 +342,19 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int unlink(final String path)
 	{
-		throw new Error("unimplemented!");
-		/*
-		final MemoryPath p = getPath(path);
-		if (p == null) {
+		try
+		{
+			getCachedPath(drive, path).delete();
+			return 0;
+		}
+		catch(NoSuchElementException e)
+		{
 			return -ErrorCodes.ENOENT();
 		}
-		p.delete();
-		return 0;
-		*/
+		catch(IOException e)
+		{
+			throw new RuntimeException(e);
+		}
 	}
 
 	@Override
