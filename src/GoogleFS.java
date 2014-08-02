@@ -15,6 +15,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 
+import com.gdrivefs.cache.Drive;
+import com.gdrivefs.cache.File;
 import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
 import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
@@ -27,9 +29,7 @@ import com.google.api.client.http.HttpTransport;
 import com.google.api.client.json.JsonFactory;
 import com.google.api.client.json.jackson2.JacksonFactory;
 import com.google.api.client.util.store.FileDataStoreFactory;
-import com.google.api.services.drive.Drive;
 import com.google.api.services.drive.DriveScopes;
-import com.google.api.services.drive.model.File;
 import com.google.api.services.drive.model.FileList;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.MemoryDatabase;
@@ -47,13 +47,10 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 {
 	Drive drive;
 	Database db = new MemoryDatabase();
-	FileCacheManager downloader;
 	
 	public GoogleFS(Drive drive, HttpTransport transport)
 	{
 		this.drive = drive;
-		this.downloader = new FileCacheManager(drive, db, transport, drive.getRequestFactory().getInitializer());
-		db.execute("CREATE TABLE FILES(ID VARCHAR(255), TITLE VARCHAR(255) NOT NULL, MD5HEX CHAR(32), SIZE INT NOT NULL, MTIME TIMESTAMP)");
 	}
 	
 	private final class MemoryDirectory extends MemoryPath
@@ -267,26 +264,15 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
 		GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(httpTransport, JSON_FACTORY, "930897891601-4mbqrmuu5osvk7j3vlkv8k59liot620f.apps.googleusercontent.com", "v18DcOoqIvmVgPVtisCijpTV", Collections.singleton(DriveScopes.DRIVE)).setDataStoreFactory(dataStoreFactory).build();
 		Credential credential = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
-		Drive drive = new Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
-      
+		
+		com.google.api.services.drive.Drive remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
+		com.gdrivefs.cache.Drive drive = new com.gdrivefs.cache.Drive(remote, httpTransport);
+		
 		new GoogleFS(drive, httpTransport).log(true).mount(args[0]);
 	}
 
 	private final MemoryDirectory rootDirectory = new MemoryDirectory("");
 
-	public GoogleFS()
-	{
-		// Sprinkle some files around
-		rootDirectory.add(new MemoryFile("Sample file.txt", "Hello there, feel free to look around.\n"));
-		rootDirectory.add(new MemoryDirectory("Sample directory"));
-		final MemoryDirectory dirWithFiles = new MemoryDirectory("Directory with files");
-		rootDirectory.add(dirWithFiles);
-		dirWithFiles.add(new MemoryFile("hello.txt", "This is some sample text.\n"));
-		dirWithFiles.add(new MemoryFile("hello again.txt", "This another file with text in it! Oh my!\n"));
-		final MemoryDirectory nestedDirectory = new MemoryDirectory("Sample nested directory");
-		dirWithFiles.add(nestedDirectory);
-		nestedDirectory.add(new MemoryFile("So deep.txt", "Man, I'm like, so deep in this here file structure.\n"));
-	}
 
 	@Override
 	public int access(final String path, final int access)
@@ -327,48 +313,20 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 
 		try
 		{
-			long size = db.getLong("SELECT SIZE FROM FILES WHERE TITLE=?", path.substring(1));
-			Date modified = db.getTimestamp("SELECT MTIME FROM FILES WHERE TITLE=?", path.substring(1));
-			stat.setMode(NodeType.FILE, true, true, false, false, false, false, false, false, false).size(size).mtime(modified.getTime()/1000);
+			File f = getCachedPath(drive, path);
+			stat.setMode(NodeType.FILE, true, true, false, false, false, false, false, false, false).size(f.getSize()).mtime(f.getModified().getTime()/1000);
 			return 0;
 		}
 		catch(NoSuchElementException e)
 		{
 			return -ErrorCodes.ENOENT();			
 		}
-	}
-	
-	private java.util.List<String> getChildren(String id)
-	{
-		java.util.List<String> children = new ArrayList<String>();
-		try
-		{
-			Drive.Files.List lst = drive.files().list().setQ("'"+id+"' in parents and trashed=false");
-	
-	        do {
-	            try {
-	            	FileList files = lst.execute();
-	            	db.execute("TRUNCATE TABLE FILES");
-	                for(File child : files.getItems())
-	                {
-	                	children.add(child.getTitle());
-	            		db.execute("INSERT INTO FILES(ID, TITLE, MD5HEX, SIZE, MTIME) VALUES(?,?,?,?,?)", child.getId(), child.getTitle(), child.getMd5Checksum(), child.getQuotaBytesUsed(), new Date(child.getModifiedDate().getValue()));
-	            		System.out.println(child.getId());
-	                }
-	                lst.setPageToken(files.getNextPageToken());
-	            } catch (IOException e) {
-	                System.out.println("An error occurred: " + e);
-	                lst.setPageToken(null);
-	            }
-	        } while (lst.getPageToken() != null
-	                && lst.getPageToken().length() > 0);
-		}
 		catch(IOException e)
 		{
 			throw new RuntimeException(e);
 		}
-		return children;
 	}
+	
 
 	private String getLastComponent(String path)
 	{
@@ -425,9 +383,24 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		return ((MemoryFile) p).read(buffer, size, offset);
 		*/
 		
-		byte[] bytes = downloader.read(path, size, offset);
-		buffer.put(bytes);
-		return bytes.length;
+		try
+		{
+			for(File f : getShowsDirectory(drive).getChildren())
+				if(f.getTitle().equals(path.substring(1)))
+				{
+					// Error checking
+					if(f.isDirectory()) return -ErrorCodes.EISDIR();
+					
+					byte[] bytes = f.read(path, size, offset);
+					buffer.put(bytes);
+					return bytes.length;
+				}
+			return -ErrorCodes.ENOENT();
+		}
+		catch(IOException e)
+		{
+			throw new RuntimeException(e);
+		}
 	}
 
 	@Override
@@ -447,10 +420,35 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		
 		System.out.println(path);
 		
-		for(String child : getChildren("0B9V4qybqtJE-Y0t6bXBhb3hieHc"))
-        	filler.add(child);
+		try
+		{
+			for(File child : getCachedPath(drive, path).getChildren()) 
+				filler.add(child.getTitle());
+		}
+		catch(IOException e)
+		{
+			throw new RuntimeException(e);
+		}
         
 		return 0;
+	}
+	
+	private static File getCachedPath(Drive drive, String localPath) throws IOException
+	{
+		if("/".equals(localPath)) return getShowsDirectory(drive);
+		localPath = localPath.substring(1);
+		for(File child : getShowsDirectory(drive).getChildren()) 
+			if(localPath.equals(child.getTitle()))
+				return child;
+		throw new NoSuchElementException(localPath);
+	}
+	
+	private static File getShowsDirectory(Drive drive) throws IOException
+	{
+		for(File f : drive.getRoot().getChildren())
+			if(f.getTitle().equals("TV Shows"))
+				return f;
+		throw new NoSuchElementException("TV Shows");
 	}
 
 	@Override
@@ -527,21 +525,3 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	}
 	
 }
-
-class MyDownloadProgressListener implements MediaHttpDownloaderProgressListener {
-
-	GoogleFS fs;
-	
-	public MyDownloadProgressListener(GoogleFS fs)
-	{
-		this.fs = fs;
-	}
-	
-    public void progressChanged(MediaHttpDownloader downloader) throws IOException {
-      synchronized(fs)
-      {
-    	  fs.notifyAll();
-      }
-    }
-  }
-
