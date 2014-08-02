@@ -53,204 +53,6 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		this.drive = drive;
 	}
 	
-	private final class MemoryDirectory extends MemoryPath
-	{
-		private final List<MemoryPath> contents = new ArrayList<MemoryPath>();
-
-		private MemoryDirectory(final String name)
-		{
-			super(name);
-		}
-
-		private MemoryDirectory(final String name, final MemoryDirectory parent)
-		{
-			super(name, parent);
-		}
-
-		public synchronized void add(final MemoryPath p)
-		{
-			contents.add(p);
-			p.parent = this;
-		}
-
-		private synchronized void deleteChild(final MemoryPath child)
-		{
-			contents.remove(child);
-		}
-
-		@Override
-		protected MemoryPath find(String path)
-		{
-			if (super.find(path) != null) {
-				return super.find(path);
-			}
-			while (path.startsWith("/")) {
-				path = path.substring(1);
-			}
-			synchronized (this) {
-				if (!path.contains("/")) {
-					for (final MemoryPath p : contents) {
-						if (p.name.equals(path)) {
-							return p;
-						}
-					}
-					return null;
-				}
-				final String nextName = path.substring(0, path.indexOf("/"));
-				final String rest = path.substring(path.indexOf("/"));
-				for (final MemoryPath p : contents) {
-					if (p.name.equals(nextName)) {
-						return p.find(rest);
-					}
-				}
-			}
-			return null;
-		}
-
-		@Override
-		protected void getattr(final StatWrapper stat)
-		{
-			stat.setMode(NodeType.DIRECTORY);
-		}
-
-		private synchronized void mkdir(final String lastComponent)
-		{
-			contents.add(new MemoryDirectory(lastComponent, this));
-		}
-
-		public synchronized void mkfile(final String lastComponent)
-		{
-			contents.add(new MemoryFile(lastComponent, this));
-		}
-
-		public synchronized void read(final DirectoryFiller filler) throws IOException
-		{
-			for (final MemoryPath p : contents) {
-				filler.add(p.name);
-			}
-			filler.add("Jim");
-			
-
-	        
-	        
-		}
-	}
-
-	private final class MemoryFile extends MemoryPath
-	{
-		private ByteBuffer contents = ByteBuffer.allocate(0);
-
-		private MemoryFile(final String name)
-		{
-			super(name);
-		}
-
-		private MemoryFile(final String name, final MemoryDirectory parent)
-		{
-			super(name, parent);
-		}
-
-		public MemoryFile(final String name, final String text)
-		{
-			super(name);
-			try {
-				final byte[] contentBytes = text.getBytes("UTF-8");
-				contents = ByteBuffer.wrap(contentBytes);
-			}
-			catch (final UnsupportedEncodingException e) {
-				// Not going to happen
-			}
-		}
-
-		@Override
-		protected void getattr(final StatWrapper stat)
-		{
-			stat.setMode(NodeType.FILE).size(contents.capacity());
-		}
-
-		private int read(final ByteBuffer buffer, final long size, final long offset)
-		{
-			return 0;
-		}
-
-		private synchronized void truncate(final long size)
-		{
-			if (size < contents.capacity()) {
-				// Need to create a new, smaller buffer
-				final ByteBuffer newContents = ByteBuffer.allocate((int) size);
-				final byte[] bytesRead = new byte[(int) size];
-				contents.get(bytesRead);
-				newContents.put(bytesRead);
-				contents = newContents;
-			}
-		}
-
-		private int write(final ByteBuffer buffer, final long bufSize, final long writeOffset)
-		{
-			final int maxWriteIndex = (int) (writeOffset + bufSize);
-			final byte[] bytesToWrite = new byte[(int) bufSize];
-			synchronized (this) {
-				if (maxWriteIndex > contents.capacity()) {
-					// Need to create a new, larger buffer
-					final ByteBuffer newContents = ByteBuffer.allocate(maxWriteIndex);
-					newContents.put(contents);
-					contents = newContents;
-				}
-				buffer.get(bytesToWrite, 0, (int) bufSize);
-				contents.position((int) writeOffset);
-				contents.put(bytesToWrite);
-				contents.position(0); // Rewind
-			}
-			return (int) bufSize;
-		}
-	}
-
-	private abstract class MemoryPath
-	{
-		private String name;
-		private MemoryDirectory parent;
-
-		private MemoryPath(final String name)
-		{
-			this(name, null);
-		}
-
-		private MemoryPath(final String name, final MemoryDirectory parent)
-		{
-			this.name = name;
-			this.parent = parent;
-		}
-
-		private synchronized void delete()
-		{
-			if (parent != null) {
-				parent.deleteChild(this);
-				parent = null;
-			}
-		}
-
-		protected MemoryPath find(String path)
-		{
-			while (path.startsWith("/")) {
-				path = path.substring(1);
-			}
-			if (path.equals(name) || path.isEmpty()) {
-				return this;
-			}
-			return null;
-		}
-
-		protected abstract void getattr(StatWrapper stat);
-
-		private void rename(String newName)
-		{
-			while (newName.startsWith("/")) {
-				newName = newName.substring(1);
-			}
-			name = newName;
-		}
-	}
-
 	public static void main(final String... args) throws FuseException, GeneralSecurityException, IOException
 	{
 		if (args.length != 1) {
@@ -271,9 +73,6 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		new GoogleFS(drive, httpTransport).log(true).mount(args[0]);
 	}
 
-	private final MemoryDirectory rootDirectory = new MemoryDirectory("");
-
-
 	@Override
 	public int access(final String path, final int access)
 	{
@@ -283,6 +82,8 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int create(final String path, final ModeWrapper mode, final FileInfoWrapper info)
 	{
+		throw new Error("unimplemented!");
+		/*
 		if (getPath(path) != null) {
 			return -ErrorCodes.EEXIST();
 		}
@@ -292,6 +93,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 			return 0;
 		}
 		return -ErrorCodes.ENOENT();
+		*/
 	}
 
 	@Override
@@ -304,18 +106,23 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 //		}
 		
 		if("/".equals(path))
-		{
-			stat.setMode(NodeType.DIRECTORY);
-			return 0;
-		}
 		
 		System.out.println(path);
 
 		try
 		{
 			File f = getCachedPath(drive, path);
-			stat.setMode(NodeType.FILE, true, true, false, false, false, false, false, false, false).size(f.getSize()).mtime(f.getModified().getTime()/1000);
-			return 0;
+			
+			if(f.isDirectory())
+			{
+				stat.setMode(NodeType.DIRECTORY);
+				return 0;
+			}
+			else
+			{
+				stat.setMode(NodeType.FILE, true, true, false, false, false, false, false, false, false).size(f.getSize()).mtime(f.getModified().getTime()/1000);
+				return 0;
+			}
 		}
 		catch(NoSuchElementException e)
 		{
@@ -339,19 +146,19 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		return path.substring(path.lastIndexOf("/") + 1);
 	}
 
-	private MemoryPath getParentPath(final String path)
+	private File getParentPath(final String path)
 	{
+		throw new Error("unimplemented!");
+		/*
 		return rootDirectory.find(path.substring(0, path.lastIndexOf("/")));
-	}
-
-	private MemoryPath getPath(final String path)
-	{
-		return rootDirectory.find(path);
+		*/
 	}
 
 	@Override
 	public int mkdir(final String path, final ModeWrapper mode)
 	{
+		throw new Error("unimplemented!");
+		/*
 		if (getPath(path) != null) {
 			return -ErrorCodes.EEXIST();
 		}
@@ -361,6 +168,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 			return 0;
 		}
 		return -ErrorCodes.ENOENT();
+		*/
 	}
 
 	@Override
@@ -406,24 +214,16 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int readdir(final String path, final DirectoryFiller filler)
 	{
-		final MemoryPath p = getPath(path);
-		if (p == null) {
-			return -ErrorCodes.ENOENT();
-		}
-		
-		
-		
-	//	if (!(p instanceof MemoryDirectory)) {
-	//		return -ErrorCodes.ENOTDIR();
-	//	}
-
-		
-		System.out.println(path);
-		
 		try
 		{
-			for(File child : getCachedPath(drive, path).getChildren()) 
+			File directory = getCachedPath(drive, path);
+			if(!directory.isDirectory()) return -ErrorCodes.ENOTDIR();
+			for(File child : directory.getChildren()) 
 				filler.add(child.getTitle());
+		}
+		catch(NoSuchElementException e)
+		{
+			return -ErrorCodes.ENOENT();
 		}
 		catch(IOException e)
 		{
@@ -459,6 +259,8 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int rename(final String path, final String newName)
 	{
+		throw new Error("unimplemented!");
+		/*
 		final MemoryPath p = getPath(path);
 		if (p == null) {
 			return -ErrorCodes.ENOENT();
@@ -474,11 +276,14 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		p.rename(newName.substring(newName.lastIndexOf("/")));
 		((MemoryDirectory) newParent).add(p);
 		return 0;
+		*/
 	}
 
 	@Override
 	public int rmdir(final String path)
 	{
+		throw new Error("unimplemented!");
+		/*
 		final MemoryPath p = getPath(path);
 		if (p == null) {
 			return -ErrorCodes.ENOENT();
@@ -488,11 +293,14 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		}
 		p.delete();
 		return 0;
+		*/
 	}
 
 	@Override
 	public int truncate(final String path, final long offset)
 	{
+		throw new Error("unimplemented!");
+		/*
 		final MemoryPath p = getPath(path);
 		if (p == null) {
 			return -ErrorCodes.ENOENT();
@@ -502,23 +310,28 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		}
 		((MemoryFile) p).truncate(offset);
 		return 0;
+		*/
 	}
 
 	@Override
 	public int unlink(final String path)
 	{
+		throw new Error("unimplemented!");
+		/*
 		final MemoryPath p = getPath(path);
 		if (p == null) {
 			return -ErrorCodes.ENOENT();
 		}
 		p.delete();
 		return 0;
+		*/
 	}
 
 	@Override
-	public int write(final String path, final ByteBuffer buf, final long bufSize, final long writeOffset,
-			final FileInfoWrapper wrapper)
+	public int write(final String path, final ByteBuffer buf, final long bufSize, final long writeOffset, final FileInfoWrapper wrapper)
 	{
+		throw new Error("unimplemented!");
+		/*
 		final MemoryPath p = getPath(path);
 		if (p == null) {
 			return -ErrorCodes.ENOENT();
@@ -527,6 +340,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 			return -ErrorCodes.EISDIR();
 		}
 		return ((MemoryFile) p).write(buf, bufSize, writeOffset);
+		*/
 	}
 	
 }
