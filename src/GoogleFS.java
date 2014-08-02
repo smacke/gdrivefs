@@ -385,7 +385,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		
 		try
 		{
-			for(File f : getShowsDirectory(drive).getChildren())
+			for(File f : getCachedPath(drive, path).getChildren())
 				if(f.getTitle().equals(path.substring(1)))
 				{
 					// Error checking
@@ -435,20 +435,25 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	
 	private static File getCachedPath(Drive drive, String localPath) throws IOException
 	{
-		if("/".equals(localPath)) return getShowsDirectory(drive);
-		localPath = localPath.substring(1);
-		for(File child : getShowsDirectory(drive).getChildren()) 
-			if(localPath.equals(child.getTitle()))
-				return child;
-		throw new NoSuchElementException(localPath);
-	}
-	
-	private static File getShowsDirectory(Drive drive) throws IOException
-	{
-		for(File f : drive.getRoot().getChildren())
-			if(f.getTitle().equals("TV Shows"))
-				return f;
-		throw new NoSuchElementException("TV Shows");
+		if(!localPath.startsWith("/")) throw new IllegalArgumentException("Expected local path to start with a slash ("+localPath+")");
+		String[] pathElements = localPath.split("/");
+		
+		File current = drive.getRoot();
+		for(int i = 1; i < pathElements.length; i++)
+		{
+			if("".equals(pathElements[i])) continue;
+			
+			File candidateChild = null;
+			for(File child : current.getChildren()) 
+				if(pathElements[i].equals(child.getTitle()))
+					if(candidateChild == null) candidateChild = child;
+					else throw new RuntimeException("Path is ambiguous: "+localPath);
+			
+			if(candidateChild == null) throw new NoSuchElementException(localPath);
+			current = candidateChild;
+		}
+		
+		return current;
 	}
 
 	@Override
