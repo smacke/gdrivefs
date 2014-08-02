@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -15,7 +16,6 @@ import com.google.api.client.http.GenericUrl;
 import com.google.api.client.http.HttpRequest;
 import com.google.api.client.http.HttpRequestFactory;
 import com.google.api.client.http.HttpResponse;
-import com.google.api.client.http.HttpTransport;
 import com.google.api.client.util.IOUtils;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
@@ -36,6 +36,7 @@ public class File
 	Long size;
 	Timestamp modifiedTime;
 	List<File> children;
+	List<File> parents;
 	
 	/** Returns a new file representing the root of the drive **/
 	File(Drive drive) throws IOException
@@ -54,23 +55,33 @@ public class File
 	
 	File(Drive drive, String id) throws IOException
 	{
-		// TODO: Fetch file metadata if not already in database.
 		this.drive = drive;
 		this.id = id;
-		
-		readBasicMetadata();
 	}
 	
 	/** Reads basic metadata from the cache, throwing an exception if the file metadata isn't in our database **/
-	private void readBasicMetadata()
+	private void readBasicMetadata() throws IOException
 	{
 		List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", id);
-		if(rows.size() == 0) throw new NoSuchElementException(id);
-		DatabaseRow row = rows.get(0);
+		if(rows.size() == 0)
+		{
+			refresh();
+			rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", id);
+		}
+		readBasicMetadata(rows.get(0));
+	}
+	
+	private void readBasicMetadata(DatabaseRow row)
+	{
 		title = row.getString("TITLE");
 		isDirectory = row.getString("MD5HEX") == null;
 		size = row.getLong("SIZE");
 		modifiedTime = row.getTimestamp("MTIME");
+	}
+	
+	public void refresh() throws IOException
+	{
+		observeFile(drive, drive.getRemote().files().get(id).execute());
 	}
 	
 	String getId()
@@ -93,7 +104,13 @@ public class File
 		}
 	}
 	
-	public List<File> getChildren()
+	private void clearChildrenCache()
+	{
+		drive.getDatabase().execute("DELETE FROM FILES WHERE PARENT=?", id);
+		children = null;
+	}
+	
+	public List<File> getChildren() throws IOException
 	{
 		if(children != null) return children;
 		
@@ -104,7 +121,7 @@ public class File
 		try
 		{
 			List<String> files = drive.getDatabase().getStrings("SELECT ID FROM FILES WHERE PARENT=?", id);
-			for(String file : files) children.add(new File(drive, file));
+			for(String file : files) children.add(drive.getFile(file));
 			if(!children.isEmpty()) return children;
 		}
 		catch(IOException e)
@@ -122,7 +139,7 @@ public class File
 				try
 				{
 					FileList files = lst.execute();
-					for(com.google.api.services.drive.model.File child : files.getItems()) children.add(new File(drive, child));
+					for(com.google.api.services.drive.model.File child : files.getItems()) children.add(drive.getFile(child));
 					lst.setPageToken(files.getNextPageToken());
 				}
 				catch(IOException e)
@@ -154,24 +171,38 @@ public class File
 		return title;
 	}
 	
-	public boolean isDirectory()
+	public boolean isDirectory() throws IOException
 	{
 		if(isDirectory == null) readBasicMetadata();
 		return isDirectory;
 	}
 	
-	public long getSize()
+	public long getSize() throws IOException
 	{
 		if(size == null) readBasicMetadata();
 		return size;
 	}
 	
-	public Timestamp getModified()
+	public Timestamp getModified() throws IOException
 	{
 		if(modifiedTime == null) readBasicMetadata();
 		return modifiedTime;
 	}
 	
+	private static final String MIME_FOLDER = "application/vnd.google-apps.folder";
+	public File mkdir(String name) throws IOException
+	{
+		System.out.println(name);
+		com.google.api.services.drive.model.File directory = new com.google.api.services.drive.model.File();
+		directory.setTitle(name);
+		directory.setMimeType(MIME_FOLDER);
+		directory.setParents(Arrays.asList(new ParentReference().setId(id)));
+		
+		directory = drive.getRemote().files().insert(directory).execute();
+		children = null;
+
+	    return drive.getFile(directory);
+	}
 		
 	
 	
@@ -283,9 +314,27 @@ public class File
             file.close();
     }
 
+    public List<File> getParents() throws IOException
+    {
+    	if(parents == null) parents = new ArrayList<File>();
+    	for(ParentReference parent : drive.getRemote().files().get(id).execute().getParents())
+    		parents.add(drive.getFile(parent.getId()));
+    	return parents;
+    }
     
+    public void delete() throws IOException
+    {
+    	List<File> parents = getParents();
+    	drive.getRemote().files().delete(id).execute();
+    	
+    	// Clear the parent's cache of children
+    	for(File parent : parents) parent.clearChildrenCache();
+    }
     
-    
-    
+    @Override
+    public String toString()
+    {
+    	return "File("+id+")";
+    }
     
 }

@@ -2,7 +2,10 @@ package com.gdrivefs.cache;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
 
 import com.google.api.client.http.HttpTransport;
 import com.google.api.services.drive.model.ChildList;
@@ -21,8 +24,11 @@ public class Drive
     HttpTransport transport;
 	com.google.api.services.drive.Drive remote;
 	
-	// Cache (null if data must be fetched from db)
-	File root;
+	// Drive-wide singularity cache
+	// TODO: Use soft references and clear the map when references are dropped
+	Map<String, File> files = new HashMap<String, File>();
+	
+	String rootId;
 	
 	public Drive(com.google.api.services.drive.Drive remote, HttpTransport transport)
 	{
@@ -46,9 +52,32 @@ public class Drive
 		return db;
 	}
 	
-	public File getRoot() throws IOException
+	public synchronized File getRoot() throws IOException
 	{
-		if(root == null) root = new File(this);
-		return root;
+		if(rootId == null) rootId = new File(this).getId();
+		return getFile(rootId);
+	}
+	
+	public synchronized File getFile(com.google.api.services.drive.model.File remote) throws IOException
+	{
+		File file = files.get(remote.getId());
+		if(file == null)
+		{
+			file = new File(this, remote);
+			files.put(file.getId(), file);
+		}
+		return file;
+	}
+	
+	public synchronized File getFile(String id) throws IOException
+	{
+		File file = files.get(id);
+		if(file == null)
+		{
+			try { file = new File(this, id); }
+			catch(NoSuchElementException e) { file = new File(this, getRemote().files().get(id).execute()); }
+			files.put(file.getId(), file);
+		}
+		return file;
 	}
 }

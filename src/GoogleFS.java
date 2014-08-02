@@ -99,16 +99,6 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int getattr(final String path, final StatWrapper stat)
 	{
-//		final MemoryPath p = getPath(path);
-//		if (p != null) {
-//			p.getattr(stat);
-//			return 0;
-//		}
-		
-		if("/".equals(path))
-		
-		System.out.println(path);
-
 		try
 		{
 			File f = getCachedPath(drive, path);
@@ -146,28 +136,47 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		return path.substring(path.lastIndexOf("/") + 1);
 	}
 
-	private File getParentPath(final String path)
+	private File getParentPath(String path) throws IOException
 	{
-		throw new Error("unimplemented!");
-		/*
-		return rootDirectory.find(path.substring(0, path.lastIndexOf("/")));
-		*/
+		while(path.endsWith("/")) path = path.substring(0, path.length()-1);
+		path = path.substring(0, path.lastIndexOf("/"));
+		if("".equals(path)) return getCachedPath(drive, "/");
+		else return getCachedPath(drive, path);
 	}
 
 	@Override
-	public int mkdir(final String path, final ModeWrapper mode)
+	public int mkdir(String path, final ModeWrapper mode)
 	{
-		throw new Error("unimplemented!");
+		System.out.println(path);
+		while(path.endsWith("/")) path = path.substring(0, path.length()-1);
+		
+		try
+		{
+			try { getCachedPath(drive, path); return -ErrorCodes.EEXIST(); }
+			catch(NoSuchElementException e) { /* Do nothing, the directory doesn't yet exist */ }
+			
+			File parent;
+			try { parent = getParentPath(path); }
+			catch(NoSuchElementException e) { return -ErrorCodes.ENOENT(); }
+			
+			parent.mkdir(path.substring(path.lastIndexOf('/')+1));
+			return 0;
+		}
+		catch(IOException e)
+		{
+			throw new RuntimeException(e);
+		}
+		
 		/*
 		if (getPath(path) != null) {
-			return -ErrorCodes.EEXIST();
+			
 		}
 		final MemoryPath parent = getParentPath(path);
 		if (parent instanceof MemoryDirectory) {
 			((MemoryDirectory) parent).mkdir(getLastComponent(path));
 			return 0;
 		}
-		return -ErrorCodes.ENOENT();
+		
 		*/
 	}
 
@@ -282,18 +291,22 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int rmdir(final String path)
 	{
-		throw new Error("unimplemented!");
-		/*
-		final MemoryPath p = getPath(path);
-		if (p == null) {
+		try
+		{
+			File directory = getCachedPath(drive, path);
+			if(!directory.isDirectory()) return -ErrorCodes.ENOTDIR();
+			if(directory.getChildren().size() != 0) throw new RuntimeException("Can not delete non-empty directory");
+			directory.delete();
+			return 0;
+		}
+		catch(NoSuchElementException e)
+		{
 			return -ErrorCodes.ENOENT();
 		}
-		if (!(p instanceof MemoryDirectory)) {
-			return -ErrorCodes.ENOTDIR();
+		catch(IOException e)
+		{
+			throw new RuntimeException(e);
 		}
-		p.delete();
-		return 0;
-		*/
 	}
 
 	@Override
