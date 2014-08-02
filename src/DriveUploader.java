@@ -34,6 +34,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.codec.digest.DigestUtils;
 
@@ -54,14 +55,15 @@ public class DriveUploader
 			Credential credential = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
 			Drive drive = new Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
 
-			ExecutorService worker = Executors.newFixedThreadPool(10);
+			ExecutorService worker = Executors.newFixedThreadPool(2);
 			
 			for(String file : args)
 				scheduleTask(worker, drive, new java.io.File(file));
 			for(java.io.File file : new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "uploads").listFiles())
 				if(!file.isDirectory()) scheduleTask(worker, drive, file);
 
-			return;
+			worker.shutdown();
+			worker.awaitTermination(1, TimeUnit.DAYS);
 		}
 		catch(IOException e)
 		{
