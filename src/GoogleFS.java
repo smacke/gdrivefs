@@ -391,7 +391,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 					// Error checking
 					if(f.isDirectory()) return -ErrorCodes.EISDIR();
 					
-					byte[] bytes = f.read(path, size, offset);
+					byte[] bytes = f.read(size, offset);
 					buffer.put(bytes);
 					return bytes.length;
 				}

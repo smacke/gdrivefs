@@ -176,13 +176,12 @@ public class File
 	
 	
 	
-    public byte[] read(String path, final long size, final long offset)
+    public byte[] read(final long size, final long offset)
     {
             com.google.api.services.drive.model.File remoteFile;
             try
             {
-                    String fileId = drive.getDatabase().getString("SELECT ID FROM FILES WHERE TITLE=?", path.substring(1));
-                    remoteFile = drive.getRemote().files().get(fileId).execute();
+                    remoteFile = drive.getRemote().files().get(id).execute();
                     String fileMd5 = remoteFile.getMd5Checksum();
                     
                     byte[] data = downloadFragment(fileMd5, (int)offset, (int)(offset+size));
