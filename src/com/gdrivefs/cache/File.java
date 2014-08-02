@@ -82,6 +82,7 @@ public class File
 	public void refresh() throws IOException
 	{
 		observeFile(drive, drive.getRemote().files().get(id).execute());
+		readBasicMetadata();
 	}
 	
 	String getId()
@@ -131,7 +132,6 @@ public class File
 		
 		try
 		{
-			System.out.println("Fetchild child ren from google: "+id+" "+getTitle());
 			com.google.api.services.drive.Drive.Files.List lst = drive.getRemote().files().list().setQ("'"+id+"' in parents and trashed=false");
 
 			do
@@ -313,6 +313,22 @@ public class File
             file.write(data);
             file.close();
     }
+    
+    public void setTitle(String title) throws IOException
+    {
+        // First retrieve the file from the API.
+    	com.google.api.services.drive.model.File file = drive.getRemote().files().get(id).execute();
+    	
+    	if(file.getTitle().equals(title)) return;
+
+        // File's new metadata.
+        file.setTitle(title);
+
+        // Send the request to the API.
+        drive.getRemote().files().update(id, file).execute();
+        
+        refresh();
+    }
 
     public List<File> getParents() throws IOException
     {
@@ -320,6 +336,20 @@ public class File
     	for(ParentReference parent : drive.getRemote().files().get(id).execute().getParents())
     		parents.add(drive.getFile(parent.getId()));
     	return parents;
+    }
+    
+    public void addParent(File parent) throws IOException
+	{
+		ParentReference newParent = new ParentReference();
+		newParent.setId(parent.getId());
+		drive.getRemote().parents().insert(getId(), newParent).execute();
+		parent.clearChildrenCache();
+    }
+    
+    public void removeParent(File parent) throws IOException
+    {
+    	drive.getRemote().parents().delete(getId(), parent.getId()).execute();
+    	parent.clearChildrenCache();
     }
     
     public void delete() throws IOException

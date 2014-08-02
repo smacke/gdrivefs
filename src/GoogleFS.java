@@ -266,26 +266,39 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	}
 
 	@Override
-	public int rename(final String path, final String newName)
+	public int rename(final String oldPath, final String newPath)
 	{
-		throw new Error("unimplemented!");
-		/*
-		final MemoryPath p = getPath(path);
-		if (p == null) {
+		try
+		{
+			File file = getCachedPath(drive, oldPath);
+			File oldParent = getParentPath(oldPath);
+			File newParent = getParentPath(newPath);
+			String oldName = getLastComponent(oldPath);
+			String newName = getLastComponent(newPath);
+			
+			if(!newParent.isDirectory()) return -ErrorCodes.ENOTDIR();
+			
+			if(!oldParent.equals(newParent))
+			{
+				file.addParent(newParent);
+				file.removeParent(oldParent);
+			}
+			
+			if(!oldName.equals(newName))
+			{
+				file.setTitle(newName);
+			}
+			
+			return 0;
+		}
+		catch(NoSuchElementException e)
+		{
 			return -ErrorCodes.ENOENT();
 		}
-		final MemoryPath newParent = getParentPath(newName);
-		if (newParent == null) {
-			return -ErrorCodes.ENOENT();
+		catch(IOException e)
+		{
+			throw new RuntimeException(e);
 		}
-		if (!(newParent instanceof MemoryDirectory)) {
-			return -ErrorCodes.ENOTDIR();
-		}
-		p.delete();
-		p.rename(newName.substring(newName.lastIndexOf("/")));
-		((MemoryDirectory) newParent).add(p);
-		return 0;
-		*/
 	}
 
 	@Override
