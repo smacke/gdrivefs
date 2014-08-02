@@ -71,18 +71,11 @@ public class File
 	
 	public String getTitle() throws IOException
 	{
-		return getRemoteMetadata().getTitle();
+		return drive.getDatabase().getString("SELECT TITLE FROM FILES WHERE ID=?", id);
 	}
 	
 	public boolean isDirectory()
 	{
 		return drive.getDatabase().getString("SELECT MD5HEX FROM FILES WHERE ID=?", id) == null;
 	}
-	
-	public com.google.api.services.drive.model.File getRemoteMetadata() throws IOException
-	{
-		return drive.getRemote().files().get(id).execute();
-	}
-	
-	
 }

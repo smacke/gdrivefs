@@ -18,7 +18,7 @@ public class Drive
 	{
 		this.db = new MemoryDatabase();
 		db.execute("CREATE TABLE FILES(ID VARCHAR(255), PARENT VARCHAR(255), TITLE VARCHAR(255) NOT NULL, MD5HEX CHAR(32), SIZE INT, MTIME TIMESTAMP, OBSERVED TIMESTAMP)");
-		
+		db.execute("CREATE UNIQUE INDEX ID ON FILES(ID)");
 		this.remote = remote;
 	}
 	
