@@ -385,30 +385,36 @@ public class File
     	for(ParentReference parent : drive.getRemote().files().get(id).execute().getParents())
     		parents.add(drive.getFile(parent.getId()));
     	return parents;
-    }
-    
-    public void addParent(File parent) throws IOException
+	}
+
+	public void addChild(File child) throws IOException
 	{
+		if(!isDirectory()) throw new UnsupportedOperationException("Can not add child to non-directory");
+
 		ParentReference newParent = new ParentReference();
-		newParent.setId(parent.getId());
-		drive.getRemote().parents().insert(getId(), newParent).execute();
-		parent.clearChildrenCache();
-    }
-    
-    public void removeParent(File parent) throws IOException
-    {
-    	drive.getRemote().parents().delete(getId(), parent.getId()).execute();
-    	parent.clearChildrenCache();
-    }
-    
-    public void trash() throws IOException
-    {
-    	List<File> parents = getParents();
-    	drive.getRemote().files().trash(id).execute();
-    	
-    	// Clear the parent's cache of children
-    	for(File parent : parents) parent.clearChildrenCache();
-    }
+		newParent.setId(getId());
+		drive.getRemote().parents().insert(child.getId(), newParent).execute();
+
+		clearChildrenCache();
+	}
+
+	public void removeChild(File child) throws IOException
+	{
+		if(child.getParents().size() <= 1) throw new UnsupportedOperationException("Child must have at least one parent");
+		drive.getRemote().parents().delete(child.getId(), getId()).execute();
+		clearChildrenCache();
+	}
+
+	public void trash() throws IOException
+	{
+		if(this.equals(drive.getRoot())) throw new UnsupportedOperationException("Can not trash the root node");
+		List<File> parents = getParents();
+		drive.getRemote().files().trash(id).execute();
+
+		// Clear the parent's cache of children
+		for(File parent : parents)
+			parent.clearChildrenCache();
+	}
     
     @Override
     public String toString()

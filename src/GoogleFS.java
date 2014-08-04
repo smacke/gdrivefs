@@ -2,17 +2,16 @@
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.NoSuchElementException;
 
 import net.fusejna.DirectoryFiller;
 import net.fusejna.ErrorCodes;
 import net.fusejna.FuseException;
-import net.fusejna.XattrFiller;
-import net.fusejna.XattrListFiller;
 import net.fusejna.StructFuseFileInfo.FileInfoWrapper;
 import net.fusejna.StructStat.StatWrapper;
+import net.fusejna.XattrFiller;
+import net.fusejna.XattrListFiller;
 import net.fusejna.types.TypeMode.ModeWrapper;
 import net.fusejna.types.TypeMode.NodeType;
 import net.fusejna.util.FuseFilesystemAdapterAssumeImplemented;
@@ -254,8 +253,8 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 			
 			if(!oldParent.equals(newParent))
 			{
-				file.addParent(newParent);
-				file.removeParent(oldParent);
+				newParent.addChild(file);
+				oldParent.removeChild(file);
 			}
 			
 			if(!oldName.equals(newName))
@@ -282,9 +281,9 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		{
 			File directory = getCachedPath(drive, path);
 			if(!directory.isDirectory()) return -ErrorCodes.ENOTDIR();
-			if(directory.getChildren().size() != 0) throw new RuntimeException("Can not delete non-empty directory");
-			directory.removeParent(getParentPath(path));
-			if(directory.getParents().isEmpty())
+			
+			if(directory.getParents().size() > 1) getParentPath(path).removeChild(directory);
+			else
 			{
 				// TODO: Decide what to do if parent is in trash, maybe add drive root as parent?
 				directory.trash();
@@ -324,7 +323,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		try
 		{
 			File file = getCachedPath(drive, path);
-			if(file.getParents().size() > 1) file.removeParent(getParentPath(path));
+			if(file.getParents().size() > 1) getParentPath(path).removeChild(file);
 			else
 			{
 				// TODO: Decide what to do if parent is in trash, maybe add drive root as parent?
