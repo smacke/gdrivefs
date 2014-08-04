@@ -201,15 +201,17 @@ public class File
 	public File mkdir(String name) throws IOException
 	{
 		System.out.println(name);
-		com.google.api.services.drive.model.File directory = new com.google.api.services.drive.model.File();
-		directory.setTitle(name);
-		directory.setMimeType(MIME_FOLDER);
-		directory.setParents(Arrays.asList(new ParentReference().setId(id)));
+		com.google.api.services.drive.model.File newRemoteDirectory = new com.google.api.services.drive.model.File();
+		newRemoteDirectory.setTitle(name);
+		newRemoteDirectory.setMimeType(MIME_FOLDER);
+		newRemoteDirectory.setParents(Arrays.asList(new ParentReference().setId(id)));
 		
-		directory = drive.getRemote().files().insert(directory).execute();
+		newRemoteDirectory = drive.getRemote().files().insert(newRemoteDirectory).execute();
+		File newDirectory = drive.getFile(newRemoteDirectory);
+		
 		clearChildrenCache();
 
-	    return drive.getFile(directory);
+	    return newDirectory;
 	}
 		
 	
