@@ -118,6 +118,10 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		{
 			return -ErrorCodes.ENOENT();			
 		}
+		catch(AmbiguousPathException e)
+		{
+			return -ErrorCodes.ENOTUNIQ();
+		}
 		catch(IOException e)
 		{
 			throw new RuntimeException(e);
@@ -216,8 +220,11 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		{
 			File directory = getCachedPath(drive, path);
 			if(!directory.isDirectory()) return -ErrorCodes.ENOTDIR();
-			for(File child : directory.getChildren()) 
+			for(File child : directory.getChildren())
+			{
 				filler.add(child.getTitle());
+				System.out.println("found: "+child+" "+child.getTitle());
+			}
 		}
 		catch(NoSuchElementException e)
 		{
@@ -245,7 +252,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 			for(File child : current.getChildren()) 
 				if(pathElements[i].equals(child.getTitle()))
 					if(candidateChild == null) candidateChild = child;
-					else throw new RuntimeException("Path is ambiguous: "+localPath);
+					else throw new AmbiguousPathException(localPath);
 			
 			if(candidateChild == null) throw new NoSuchElementException(localPath);
 			current = candidateChild;
