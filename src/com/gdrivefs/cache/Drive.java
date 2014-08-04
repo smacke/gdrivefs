@@ -1,15 +1,11 @@
 package com.gdrivefs.cache;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 
 import com.google.api.client.http.HttpTransport;
-import com.google.api.services.drive.model.ChildList;
-import com.google.api.services.drive.model.ChildReference;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.MemoryDatabase;
 
