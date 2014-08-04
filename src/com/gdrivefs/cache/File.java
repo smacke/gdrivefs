@@ -102,7 +102,7 @@ public class File
 	{
 		try
 		{
-			return drive.getDatabase().getString("SELECT ID FROM FILES WHERE PARENT IS NULL");
+			return drive.getDatabase().getString("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT IS NULL");
 		}
 		catch(NoSuchElementException e)
 		{
@@ -115,7 +115,7 @@ public class File
 	
 	private void clearChildrenCache()
 	{
-		drive.getDatabase().execute("DELETE FROM FILES WHERE PARENT=?", id);
+		drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE PARENT=?", id);
 		children = null;
 	}
 	
@@ -128,7 +128,7 @@ public class File
 		
 		try
 		{
-			List<String> files = drive.getDatabase().getStrings("SELECT ID FROM FILES WHERE PARENT=?", id);
+			List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", id);
 			for(String file : files) children.add(drive.getFile(file));
 			if(!children.isEmpty()) return children;
 		}
@@ -165,10 +165,13 @@ public class File
 	static void observeFile(Drive drive, com.google.api.services.drive.model.File file)
 	{
 		drive.getDatabase().execute("DELETE FROM FILES WHERE ID=?", file.getId());
+		drive.getDatabase().execute("INSERT INTO FILES(ID, TITLE, MD5HEX, SIZE, MTIME, DOWNLOADURL) VALUES(?,?,?,?,?,?)", file.getId(), file.getTitle(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl());
+		
+		drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE CHILD=?", file.getId());
 		if(file.getParents().isEmpty())
-			drive.getDatabase().execute("INSERT INTO FILES(ID, PARENT, TITLE, MD5HEX, SIZE, MTIME, DOWNLOADURL) VALUES(?,?,?,?,?,?,?)", file.getId(), null, file.getTitle(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl());
+			drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", null, file.getId());
 		for(ParentReference parent : file.getParents())
-			drive.getDatabase().execute("INSERT INTO FILES(ID, PARENT, TITLE, MD5HEX, SIZE, MTIME, DOWNLOADURL) VALUES(?,?,?,?,?,?,?)", file.getId(), parent.getId(), file.getTitle(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl());
+			drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", parent.getId(), file.getId());
 	}
 	
 	public String getTitle() throws IOException
