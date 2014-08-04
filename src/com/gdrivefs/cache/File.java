@@ -401,10 +401,10 @@ public class File
     	parent.clearChildrenCache();
     }
     
-    public void delete() throws IOException
+    public void trash() throws IOException
     {
     	List<File> parents = getParents();
-    	drive.getRemote().files().delete(id).execute();
+    	drive.getRemote().files().trash(id).execute();
     	
     	// Clear the parent's cache of children
     	for(File parent : parents) parent.clearChildrenCache();

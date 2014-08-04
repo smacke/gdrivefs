@@ -306,7 +306,12 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 			File directory = getCachedPath(drive, path);
 			if(!directory.isDirectory()) return -ErrorCodes.ENOTDIR();
 			if(directory.getChildren().size() != 0) throw new RuntimeException("Can not delete non-empty directory");
-			directory.delete();
+			directory.removeParent(getParentPath(path));
+			if(directory.getParents().isEmpty())
+			{
+				// TODO: Decide what to do if parent is in trash, maybe add drive root as parent?
+				directory.trash();
+			}
 			return 0;
 		}
 		catch(NoSuchElementException e)
@@ -341,7 +346,13 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			getCachedPath(drive, path).delete();
+			File file = getCachedPath(drive, path);
+			if(file.getParents().size() > 1) file.removeParent(getParentPath(path));
+			else
+			{
+				// TODO: Decide what to do if parent is in trash, maybe add drive root as parent?
+				file.trash();
+			}
 			return 0;
 		}
 		catch(NoSuchElementException e)
