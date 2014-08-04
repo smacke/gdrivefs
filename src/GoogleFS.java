@@ -93,7 +93,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 			
 			if(f.isDirectory())
 			{
-				stat.setMode(NodeType.DIRECTORY);
+				stat.setMode(NodeType.DIRECTORY, true, true, true, false, false, false, false, false, false);
 				return 0;
 			}
 			else
