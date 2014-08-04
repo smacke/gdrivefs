@@ -3,6 +3,8 @@ package com.gdrivefs.cache;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -20,6 +22,7 @@ import com.google.api.client.http.HttpResponse;
 import com.google.api.client.util.IOUtils;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
+import com.jimsproch.sql.DatabaseConnectionException;
 import com.jimsproch.sql.DatabaseRow;
 
 /**
@@ -34,6 +37,7 @@ public class File
 	// Cache (null indicates field must be fetched from db)
 	String title;
 	String fileMd5;
+	URL downloadUrl;
 	Boolean isDirectory;
 	Long size;
 	Timestamp modifiedTime;
@@ -73,13 +77,14 @@ public class File
 		readBasicMetadata(rows.get(0));
 	}
 	
-	private void readBasicMetadata(DatabaseRow row)
+	private void readBasicMetadata(DatabaseRow row) throws MalformedURLException
 	{
 		title = row.getString("TITLE");
 		isDirectory = row.getString("MD5HEX") == null;
 		size = row.getLong("SIZE");
 		modifiedTime = row.getTimestamp("MTIME");
 		fileMd5 = row.getString("MD5HEX");
+		downloadUrl = row.getString("DOWNLOADURL") != null ? new URL(row.getString("DOWNLOADURL")) : null;
 	}
 	
 	public void refresh() throws IOException
@@ -190,6 +195,12 @@ public class File
 		return modifiedTime;
 	}
 	
+	public URL getDownloadUrl() throws IOException
+	{
+		if(downloadUrl == null) readBasicMetadata();
+		return downloadUrl;
+	}
+	
 	public String getMd5Checksum() throws IOException
 	{
 		if(isDirectory()) return null;
@@ -217,42 +228,16 @@ public class File
 	
 	
 	
-    public byte[] read(final long size, final long offset)
+    public byte[] read(final long size, final long offset) throws DatabaseConnectionException, IOException
     {
-		try
-		{
-			byte[] data = downloadFragment(getMd5Checksum(), (int) offset, (int) (offset + size));
-			if(data.length != size) throw new Error("expected: " + size + " actual: " + data.length + " " + new String(data));
-			return data;
-			/*
-			 * 
-			 * int fragmentPointer = (int)(offset%FRAGMENT_SIZE);
-			 * int outputPointer = 0;
-			 * 
-			 * while(outputPointer != size)
-			 * {
-			 * byte[] fragmentData = getFragment(fileMd5, (int)((offset+outputPointer)/FRAGMENT_SIZE));
-			 * System.arraycopy(fragmentData, fragmentPointer, output, outputPointer, (int)Math.min(size-outputPointer, FRAGMENT_SIZE)-fragmentPointer);
-			 * outputPointer = outputPointer+(int)(Math.min(size-outputPointer, FRAGMENT_SIZE)-fragmentPointer);
-			 * fragmentPointer = 0;
-			 * }
-			 * return output;
-			 */
-		}
-		catch(IOException e)
-		{
-			e.printStackTrace();
-			throw new RuntimeException(e);
-		}
+		byte[] data = getBytesByAnyMeans(offset, offset + size);
+		if(data.length != size) throw new Error("expected: " + size + " actual: " + data.length + " " + new String(data));
+		return data;
 	}
-
     
     
     
-    
-    
-    
-    protected byte[] downloadFragment(String fileMd5, int startPosition, int endPosition) throws IOException
+    protected byte[] downloadFragment(long startPosition, long endPosition) throws IOException
 	{
     	System.out.println("Downloading "+fileMd5+" "+startPosition+" "+endPosition);
 		if(startPosition > endPosition) throw new IllegalArgumentException("startPosition (" + startPosition + ") must not be greater than endPosition (" + endPosition + ")");
@@ -263,7 +248,7 @@ public class File
 
 		HttpRequestFactory requestFactory = drive.transport.createRequestFactory(drive.getRemote().getRequestFactory().getInitializer());
 
-		HttpRequest request = requestFactory.buildGetRequest(new GenericUrl(drive.getDatabase().getStrings("SELECT DOWNLOADURL FROM FILES WHERE MD5HEX=?", fileMd5).get(0)));
+		HttpRequest request = requestFactory.buildGetRequest(new GenericUrl(getDownloadUrl()));
 		request.getHeaders().setRange("bytes=" + (startPosition) + "-" + (endPosition - 1));
 		HttpResponse response = request.execute();
 		try
@@ -319,13 +304,58 @@ public class File
 		FileUtils.writeByteArrayToFile(getCacheFile(chunkMd5), data);
     }
     
-    private java.io.File getCacheFile(String chunkMd5)
-    {
-    	java.io.File cacheFile = new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "cache");
-		for(byte c : chunkMd5.getBytes()) cacheFile = new java.io.File(cacheFile, Character.toString((char)c));
+	static java.io.File getCacheFile(String chunkMd5)
+	{
+		java.io.File cacheFile = new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "cache");
+		for(byte c : chunkMd5.getBytes())
+			cacheFile = new java.io.File(cacheFile, Character.toString((char) c));
 		cacheFile = new java.io.File(cacheFile, chunkMd5);
 		return cacheFile;
-    }
+	}
+	
+	public byte[] getBytesByAnyMeans(long start, long end) throws DatabaseConnectionException, IOException
+	{
+		byte[] output = new byte[(int)(end-start)];
+		List<DatabaseRow> fragments = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE FILEMD5=? AND STARTBYTE < ? AND ENDBYTE > ? ORDER BY STARTBYTE ASC", getMd5Checksum(), end, start);
+
+		long currentPosition = start;
+		for(DatabaseRow fragment : fragments)
+		{
+			int startbyte = fragment.getInteger("STARTBYTE");
+			int endbyte = fragment.getInteger("ENDBYTE");
+			String chunkMd5 = fragment.getString("CHUNKMD5");
+			java.io.File cachedChunkFile = File.getCacheFile(chunkMd5);
+			
+			if(!cachedChunkFile.exists() || cachedChunkFile.length() != endbyte-startbyte)
+			{
+				drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE CHUNKMD5=?", chunkMd5);
+				continue;
+			}
+			
+			// If the fragment starts after the byte we need, download the piece we still need
+			if(startbyte > currentPosition)
+			{
+				byte[] data = downloadFragment(currentPosition, Math.min(startbyte, end));
+				System.arraycopy(data, 0, output, (int)(currentPosition-start), data.length);
+				currentPosition += data.length;
+			}
+
+			// Consume the fragment
+			int copyStart = (int)(currentPosition-startbyte);
+			System.out.println("endbyte"+endbyte+" "+"currentPosition"+currentPosition+" "+"startbyte"+startbyte+" "+"readend"+end);
+			int copyEnd = Math.min((int)(endbyte-startbyte), (int)(end-startbyte));
+			System.out.println("readstart"+start+" "+"readend"+end+" "+"copyStart"+copyStart+" "+"copyEnd"+copyEnd+" "+"destpos"+(currentPosition-start)+" "+"length"+(copyEnd-copyStart)+" ");
+			System.out.println("outputlength"+output.length+" "+"fragmentlength"+FileUtils.readFileToByteArray(cachedChunkFile).length);
+			System.arraycopy(FileUtils.readFileToByteArray(cachedChunkFile), copyStart, output, (int)(currentPosition-start), copyEnd-copyStart);
+			currentPosition += copyEnd-copyStart;
+		}
+		
+		byte[] data = downloadFragment(currentPosition, end);
+		System.arraycopy(data, 0, output, (int)(currentPosition-start), data.length);
+		currentPosition += data.length;
+		
+		return output;
+	}
     
     public void setTitle(String title) throws IOException
     {
@@ -341,6 +371,9 @@ public class File
         drive.getRemote().files().update(id, file).execute();
         
         refresh();
+        
+        for(ParentReference ref : file.getParents())
+        	drive.getFile(ref.getId()).clearChildrenCache();
     }
 
     public List<File> getParents() throws IOException

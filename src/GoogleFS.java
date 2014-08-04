@@ -199,7 +199,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	
 			if(f.isDirectory()) return -ErrorCodes.EISDIR();
 
-			byte[] bytes = f.read(size, offset);
+			byte[] bytes = f.read(Math.min(size, f.getSize()-offset), offset);
 			buffer.put(bytes);
 			return bytes.length;
 		}
@@ -209,7 +209,8 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		}
 		catch(IOException e)
 		{
-			throw new RuntimeException(e);
+			e.printStackTrace();
+			return -ErrorCodes.EIO();
 		}
 	}
 

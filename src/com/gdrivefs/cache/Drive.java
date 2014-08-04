@@ -38,6 +38,7 @@ public class Drive
         db.execute("CREATE INDEX FILE_ID ON FILES(ID)");
         db.execute("CREATE UNIQUE INDEX FILE_ID_PARENT ON FILES(ID, PARENT)");
         db.execute("CREATE UNIQUE INDEX FILE_PARENT ON FILES(ID, PARENT)");
+        db.execute("CREATE INDEX FRAGMENTS_FILEMD5 ON FRAGMENTS(FILEMD5)");
 		this.remote = remote;
 		this.transport = transport;
 	}
