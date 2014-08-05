@@ -200,7 +200,6 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 			for(File child : directory.getChildren())
 			{
 				filler.add(child.getTitle());
-				System.out.println("found: "+child+" "+child.getTitle());
 			}
 		}
 		catch(NoSuchElementException e)

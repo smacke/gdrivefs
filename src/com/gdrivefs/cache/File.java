@@ -8,7 +8,9 @@ import java.net.URL;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
 import java.util.Date;
+import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.NoSuchElementException;
 
@@ -164,14 +166,17 @@ public class File
 	
 	static void observeFile(Drive drive, com.google.api.services.drive.model.File file)
 	{
+		GregorianCalendar nextUpdateTimestamp = new GregorianCalendar();
+		nextUpdateTimestamp.add(Calendar.DAY_OF_YEAR, 1);
+		
 		drive.getDatabase().execute("DELETE FROM FILES WHERE ID=?", file.getId());
-		drive.getDatabase().execute("INSERT INTO FILES(ID, TITLE, MD5HEX, SIZE, MTIME, DOWNLOADURL) VALUES(?,?,?,?,?,?)", file.getId(), file.getTitle(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl());
+		drive.getDatabase().execute("INSERT INTO FILES(ID, TITLE, MD5HEX, SIZE, MTIME, DOWNLOADURL, PREVIOUSUPDATE, NEXTUPDATE) VALUES(?,?,?,?,?,?,?,?)", file.getId(), file.getTitle(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl(), new Date(), nextUpdateTimestamp.getTime());
 		
 		drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE CHILD=?", file.getId());
 		if(file.getParents().isEmpty())
-			drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", null, file.getId());
+			drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD, PREVIOUSUPDATE, NEXTUPDATE) VALUES(?,?,?,?)", null, file.getId(), new Date(), nextUpdateTimestamp.getTime());
 		for(ParentReference parent : file.getParents())
-			drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", parent.getId(), file.getId());
+			drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD, PREVIOUSUPDATE, NEXTUPDATE) VALUES(?,?,?,?)", parent.getId(), file.getId(), new Date(), nextUpdateTimestamp.getTime());
 	}
 	
 	public String getTitle() throws IOException
