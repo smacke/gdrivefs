@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.NoSuchElementException;
 
 import com.google.api.client.http.HttpTransport;
+import com.google.api.client.util.ExponentialBackOff;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.MemoryDatabase;
 
@@ -20,6 +21,9 @@ public class Drive
     HttpTransport transport;
 	com.google.api.services.drive.Drive remote;
 	
+	long nextFileNotFoundAttempt = System.currentTimeMillis();
+	ExponentialBackOff fileNotFoundBackoff = new ExponentialBackOff.Builder().setMaxElapsedTimeMillis(Integer.MAX_VALUE).setMaxIntervalMillis(Integer.MAX_VALUE).build();
+	
 	// Drive-wide singularity cache
 	// TODO: Use soft references and clear the map when references are dropped
 	Map<String, File> files = new HashMap<String, File>();
@@ -30,7 +34,7 @@ public class Drive
 	{
 		this.db = new MemoryDatabase();
 		db.execute("CREATE TABLE DRIVES(ROOT VARCHAR(255))");
-		db.execute("CREATE TABLE FILES(ID VARCHAR(255), TITLE VARCHAR(255) NOT NULL, MIMETYPE VARCHAR(255) NOT NULL, MD5HEX CHAR(32), SIZE INT, MTIME TIMESTAMP, DOWNLOADURL CLOB, METADATAREFRESHED TIMESTAMP, CHILDRENREFRESHED TIMESTAMP)");
+		db.execute("CREATE TABLE FILES(ID VARCHAR(255), TITLE VARCHAR(255) NOT NULL, MIMETYPE VARCHAR(255) NOT NULL, MD5HEX CHAR(32), SIZE BIGINT, MTIME TIMESTAMP, DOWNLOADURL CLOB, METADATAREFRESHED TIMESTAMP, CHILDRENREFRESHED TIMESTAMP)");
 		db.execute("CREATE TABLE RELATIONSHIPS(PARENT VARCHAR(255), CHILD VARCHAR(255))");
         db.execute("CREATE TABLE FRAGMENTS(FILEMD5 CHAR(32) NOT NULL, CHUNKMD5 CHAR(32) NOT NULL, STARTBYTE INT NOT NULL, ENDBYTE INT NOT NULL)");
         db.execute("CREATE UNIQUE INDEX FILE_ID ON FILES(ID)");
@@ -74,7 +78,6 @@ public class Drive
 			file = new File(this, id);
 			files.put(file.getId(), file);
 		}
-		file.considerAsyncDirectoryRefresh(10*60*1000);
 		return file;
 	}
 }

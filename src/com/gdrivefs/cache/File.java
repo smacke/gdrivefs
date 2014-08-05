@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
@@ -101,9 +102,21 @@ public class File
 	}
 	
 	/**
-	 * Asynchronously refresh this file if the file hasn't been refreshed recently (within thresholdInMillis).
+	 * Refresh this file if the file hasn't been refreshed recently (within threshold).
 	 */
-	public void considerAsyncDirectoryRefresh(final int thresholdInMillis)
+	public void considerSynchronousDirectoryRefresh(long threshold, TimeUnit units) throws IOException
+	{
+		if(!isDirectory()) throw new Error("This method must not be called on non-directories; called on "+id+"; consider calling method on this file's parent");
+
+		Date updateThreshold = new Date(System.currentTimeMillis()-units.toMillis(threshold));
+		if(getMetadataDate().before(updateThreshold)) refresh();
+		if(getChildrenDate().before(updateThreshold)) updateChildrenFromRemote();
+	}
+	
+	/**
+	 * Asynchronously refresh this file if the file hasn't been refreshed recently (within threshold).
+	 */
+	public void considerAsyncDirectoryRefresh(final long threshold, final TimeUnit units)
 	{
 		// Sanity check that we are in fact calling this method on a directory.
 		// We do the mimecheck ourselves instead of calling isDirectory() to avoid potentially doing I/O on an asynchronous code path
@@ -117,27 +130,62 @@ public class File
 			{
 				try
 				{
-					if(!isDirectory()) throw new Error("This method must not be called on non-directories; called on "+id+"; consider calling method on this file's parent");
-
-					Date updateThreshold = new Date(System.currentTimeMillis()-thresholdInMillis);
-					if(getMetadataDate().before(updateThreshold)) refresh();
-					if(getChildrenDate().before(updateThreshold)) updateChildrenFromRemote();
+					considerSynchronousDirectoryRefresh(threshold, units);
 				}
 				catch(IOException e)
 				{
-					// TODO Auto-generated catch block
-					e.printStackTrace();
+					throw new RuntimeException();
 				}
 			}
 		});
+	}
+
+	public List<File> getChildren(String title) throws IOException
+	{
+		List<File> children = getChildrenInternal(title);
+		
+		if(!children.isEmpty()) return children;
+		
+		// If we get to this point, it means the user was looking for a specific child, but that child was not found.
+		// Sometimes this implies the user has some knowledge about an update that we're as-of-yet unaware-of, and are trying to access that file.
+		// We can use this information to be more aggressive about doing a fetch, but since 404's are a perfectly valid FS outcome, we don't want to block every time.
+		// If the user was correct, and there was an update available, it means this heuristic is working, so we continue to use the heuristic.
+		// If the user was wrong, we back off exponentially, thereby avoiding a heuristic that isn't working for this user.
+		
+		// Do not retry if we're backing off, and do not retry if the last attempt was less than a second ago.
+		if(drive.nextFileNotFoundAttempt > System.currentTimeMillis()) return children;
+		if(getChildrenDate().after(new Date(System.currentTimeMillis()-1000))) return children;
+
+		// Perform refresh
+		considerSynchronousDirectoryRefresh(1, TimeUnit.SECONDS);
+		
+		// Get a new list of children
+		children = getChildrenInternal(title);
+		
+		// If the children changed, we were successful.  Else, heuristic failed so we backoff.
+		if(children.size() > 0){ System.out.println("resetting counter"); drive.fileNotFoundBackoff.reset(); }
+		else {long timeout = drive.fileNotFoundBackoff.nextBackOffMillis(); System.out.println("new timeout: "+timeout); drive.nextFileNotFoundAttempt = System.currentTimeMillis()+timeout; }
+
+		return children;
+	}
+	
+	private List<File> getChildrenInternal(String title) throws IOException
+	{
+		List<File> children = new ArrayList<File>();
+		for(File child : getChildren())
+			if(title.equals(child.getTitle()))
+				children.add(child);
+		return children;
 	}
 	
 	public List<File> getChildren() throws IOException
 	{
 		if(children != null)
 		{
-			considerAsyncDirectoryRefresh(10*60*1000);
-			for(File child : children) child.considerAsyncDirectoryRefresh(10*60*1000);
+			considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+			for(File child : children)
+				if(child.isDirectory())
+					child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
 			return children;
 		}
 		
@@ -150,8 +198,10 @@ public class File
 			for(String file : files) children.add(drive.getFile(file));
 			if(!children.isEmpty())
 			{
-				considerAsyncDirectoryRefresh(60*1000);
-				for(File child : children) child.considerAsyncDirectoryRefresh(10*60*1000);
+				considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+				for(File child : children)
+					if(child.isDirectory())
+						child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
 				return children;
 			}
 		}
@@ -161,8 +211,10 @@ public class File
 		}
 		
 		updateChildrenFromRemote();
-		considerAsyncDirectoryRefresh(60*1000);
-		for(File child : children) child.considerAsyncDirectoryRefresh(10*60*1000);
+		considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+		for(File child : children)
+			if(child.isDirectory())
+				child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
 		
 		return children;
 	}
@@ -197,7 +249,7 @@ public class File
 		}
 	}
 	
-	void refresh(com.google.api.services.drive.model.File file, Date asof) throws IOException
+	synchronized void refresh(com.google.api.services.drive.model.File file, Date asof) throws IOException
 	{
 		if(!id.equals(file.getId())) throw new Error("Attempting to refresh "+id+" using remote file "+file.getId());
 		
@@ -221,8 +273,8 @@ public class File
 		if(title == null) readBasicMetadata();
 		
 		// Somebody appears to be watching this file; let's keep it up-to-date
-		if(isDirectory()) considerAsyncDirectoryRefresh(10*60*1000);
-		else for(File file : getParents()) file.considerAsyncDirectoryRefresh(10*60*1000);
+		if(isDirectory()) considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+		else if(parents != null) for(File file : parents) file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
 		
 		return title;
 	}
@@ -280,7 +332,7 @@ public class File
 		if(isDirectory()) return null;
 		
 		// Somebody appears to be watching this file; let's keep it up-to-date
-		for(File file : getParents()) file.considerAsyncDirectoryRefresh(10*60*1000);
+		for(File file : getParents()) file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
 		
 		if(fileMd5 == null) readBasicMetadata();
 		return fileMd5;
