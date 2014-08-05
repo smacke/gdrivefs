@@ -29,8 +29,9 @@ public class Drive
 	public Drive(com.google.api.services.drive.Drive remote, HttpTransport transport)
 	{
 		this.db = new MemoryDatabase();
-		db.execute("CREATE TABLE FILES(ID VARCHAR(255), TITLE VARCHAR(255) NOT NULL, MD5HEX CHAR(32), SIZE INT, MTIME TIMESTAMP, OBSERVED TIMESTAMP, DOWNLOADURL CLOB, PREVIOUSUPDATE TIMESTAMP, NEXTUPDATE TIMESTAMP)");
-		db.execute("CREATE TABLE RELATIONSHIPS(PARENT VARCHAR(255), CHILD VARCHAR(255), PREVIOUSUPDATE TIMESTAMP, NEXTUPDATE TIMESTAMP)");
+		db.execute("CREATE TABLE DRIVES(ROOT VARCHAR(255))");
+		db.execute("CREATE TABLE FILES(ID VARCHAR(255), TITLE VARCHAR(255) NOT NULL, MIMETYPE VARCHAR(255) NOT NULL, MD5HEX CHAR(32), SIZE INT, MTIME TIMESTAMP, DOWNLOADURL CLOB, METADATAREFRESHED TIMESTAMP, CHILDRENREFRESHED TIMESTAMP)");
+		db.execute("CREATE TABLE RELATIONSHIPS(PARENT VARCHAR(255), CHILD VARCHAR(255))");
         db.execute("CREATE TABLE FRAGMENTS(FILEMD5 CHAR(32) NOT NULL, CHUNKMD5 CHAR(32) NOT NULL, STARTBYTE INT NOT NULL, ENDBYTE INT NOT NULL)");
         db.execute("CREATE UNIQUE INDEX FILE_ID ON FILES(ID)");
         db.execute("CREATE UNIQUE INDEX RELATIONSHIPS_CHILD_PARENT ON RELATIONSHIPS(CHILD, PARENT)");
@@ -51,19 +52,18 @@ public class Drive
 	
 	public synchronized File getRoot() throws IOException
 	{
-		if(rootId == null) rootId = new File(this).getId();
+		if(rootId == null)
+			try
+			{
+				rootId = getDatabase().getString("SELECT ROOT FROM DRIVES");
+			}
+			catch(NoSuchElementException e)
+			{
+				rootId = getRemote().about().get().execute().getRootFolderId();
+				getDatabase().execute("INSERT INTO DRIVES(ROOT) VALUES(?)", rootId);
+			}
+		
 		return getFile(rootId);
-	}
-	
-	public synchronized File getFile(com.google.api.services.drive.model.File remote) throws IOException
-	{
-		File file = files.get(remote.getId());
-		if(file == null)
-		{
-			file = new File(this, remote);
-			files.put(file.getId(), file);
-		}
-		return file;
 	}
 	
 	public synchronized File getFile(String id) throws IOException
@@ -71,10 +71,10 @@ public class Drive
 		File file = files.get(id);
 		if(file == null)
 		{
-			try { file = new File(this, id); }
-			catch(NoSuchElementException e) { file = new File(this, getRemote().files().get(id).execute()); }
+			file = new File(this, id);
 			files.put(file.getId(), file);
 		}
+		file.considerAsyncDirectoryRefresh(10*60*1000);
 		return file;
 	}
 }

@@ -172,8 +172,11 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		try
 		{
 			File f = getCachedPath(drive, path);
-	
+
 			if(f.isDirectory()) return -ErrorCodes.EISDIR();
+
+			boolean isGoogleDoc = f.getMimeType().startsWith("application/vnd.google-apps.");
+			if(isGoogleDoc) return -ErrorCodes.EMEDIUMTYPE();
 
 			byte[] bytes = f.read(Math.min(size, f.getSize()-offset), offset);
 			buffer.put(bytes);
