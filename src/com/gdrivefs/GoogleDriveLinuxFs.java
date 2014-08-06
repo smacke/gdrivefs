@@ -1,3 +1,4 @@
+package com.gdrivefs;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -18,8 +19,8 @@ import net.fusejna.types.TypeMode.ModeWrapper;
 import net.fusejna.types.TypeMode.NodeType;
 import net.fusejna.util.FuseFilesystemAdapterAssumeImplemented;
 
-import com.gdrivefs.cache.Drive;
-import com.gdrivefs.cache.File;
+import com.gdrivefs.simplecache.Drive;
+import com.gdrivefs.simplecache.File;
 import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
 import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
@@ -33,12 +34,12 @@ import com.google.api.services.drive.DriveScopes;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.MemoryDatabase;
 
-public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
+public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 {
 	Drive drive;
 	Database db = new MemoryDatabase();
 	
-	public GoogleFS(Drive drive, HttpTransport transport)
+	public GoogleDriveLinuxFs(Drive drive, HttpTransport transport)
 	{
 		this.drive = drive;
 	}
@@ -58,14 +59,14 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		Credential credential = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
 		
 		com.google.api.services.drive.Drive remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
-		com.gdrivefs.cache.Drive drive = new com.gdrivefs.cache.Drive(remote, httpTransport);
+		com.gdrivefs.simplecache.Drive drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
 		
-		GoogleFS filesystem = null;
+		GoogleDriveLinuxFs filesystem = null;
 		
 		try
 		{
 			// Create and mount the filesystem
-			filesystem = new GoogleFS(drive, httpTransport);
+			filesystem = new GoogleDriveLinuxFs(drive, httpTransport);
 			filesystem.log(true);
 			filesystem.mount(new java.io.File(args[0]), false);
 			

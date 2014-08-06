@@ -1,3 +1,4 @@
+package com.gdrivefs;
 
 public class AmbiguousPathException extends RuntimeException
 {

@@ -1,4 +1,4 @@
-package com.gdrivefs.cache;
+package com.gdrivefs.simplecache;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
