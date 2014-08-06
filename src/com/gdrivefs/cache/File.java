@@ -105,10 +105,13 @@ public class File
 		return id;
 	}
 	
-	private void clearChildrenCache()
+	private synchronized void clearChildrenCache() throws IOException
 	{
+		if(title == null) readBasicMetadata();
+		drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = NULL WHERE ID=?", id);
 		drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE PARENT=?", id);
 		children = null;
+		childrenAsOfDate = null;
 	}
 	
 	/**
@@ -203,26 +206,30 @@ public class File
 		
 		try
 		{
-			children = drive.getDatabase().execute(new Transaction<List<File>>()
-				{
-					@Override
-					public List<File> run(Database db) throws Throwable
-					{
-						List<File> children = new ArrayList<File>();
-						List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", id);
-						for(String file : files) children.add(drive.getFile(file));
-						if(!children.isEmpty())
+			synchronized(this)
+			{
+				if(childrenAsOfDate != null)
+					children = drive.getDatabase().execute(new Transaction<List<File>>()
 						{
-							considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
-							for(File child : children)
-								if(child.isDirectory())
-									child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
-							return children;
+							@Override
+							public List<File> run(Database db) throws Throwable
+							{
+								List<File> children = new ArrayList<File>();
+								List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", id);
+								for(String file : files) children.add(drive.getFile(file));
+								if(!children.isEmpty())
+								{
+									considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+									for(File child : children)
+										if(child.isDirectory())
+											child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+									return children;
+								}
+								return null;
+							}
 						}
-						return children;
-					}
-				}
-			);
+					);
+			}
 		}
 		catch(SQLException e1)
 		{
@@ -264,6 +271,7 @@ public class File
 					for(com.google.api.services.drive.model.File child : googleChildren)
 					{
 						children.add(drive.getFile(child.getId()));
+						drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", getId(), child.getId());
 					}
 					return children;
 				}
@@ -272,8 +280,11 @@ public class File
 			for(com.google.api.services.drive.model.File child : googleChildren)
 				drive.getFile(child.getId()).refresh(child, childrenUpdateDate);
 			
-			drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = ? WHERE ID = ?", childrenUpdateDate, id);
-			this.childrenAsOfDate = childrenUpdateDate;
+			synchronized(this)
+			{
+				drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = ? WHERE ID = ?", childrenUpdateDate, id);
+				this.childrenAsOfDate = childrenUpdateDate;
+			}
 		}
 		catch(Exception e)
 		{
@@ -294,7 +305,7 @@ public class File
 			public Void run(Database arg0) throws Throwable
 			{
 				drive.getDatabase().execute("DELETE FROM FILES WHERE ID=?", file.getId());
-				drive.getDatabase().execute("INSERT INTO FILES(ID, TITLE, MIMETYPE, MD5HEX, SIZE, MTIME, DOWNLOADURL, METADATAREFRESHED, CHILDRENREFRESHED) VALUES(?,?,?,?,?,?,?,?,?)", file.getId(), file.getTitle(), file.getMimeType(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl(), asof, childrenAsOfDate != null ? childrenAsOfDate : new Date(1));
+				drive.getDatabase().execute("INSERT INTO FILES(ID, TITLE, MIMETYPE, MD5HEX, SIZE, MTIME, DOWNLOADURL, METADATAREFRESHED, CHILDRENREFRESHED) VALUES(?,?,?,?,?,?,?,?,?)", file.getId(), file.getTitle(), file.getMimeType(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl(), asof, childrenAsOfDate != null ? childrenAsOfDate : null);
 				return null;
 			}
 		});
@@ -306,8 +317,6 @@ public class File
 			public Void run(Database arg0) throws Throwable
 			{
 				drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE CHILD=?", file.getId());
-				if(file.getParents().isEmpty())
-					drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", null, file.getId());
 				for(ParentReference parent : file.getParents())
 					drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", parent.getId(), file.getId());
 				return null;
@@ -360,8 +369,12 @@ public class File
 	
 	public Date getChildrenDate() throws IOException
 	{
-		if(childrenAsOfDate == null) updateChildrenFromRemote();
-		return childrenAsOfDate;
+		synchronized(this)
+		{
+			if(metadataAsOfDate == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
+			if(childrenAsOfDate == null) updateChildrenFromRemote();
+			return childrenAsOfDate;
+		}
 	}
 	
 	public Timestamp getModified() throws IOException
