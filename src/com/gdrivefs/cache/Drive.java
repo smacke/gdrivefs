@@ -42,6 +42,11 @@ public class Drive
         db.execute("CREATE INDEX FRAGMENTS_FILEMD5 ON FRAGMENTS(FILEMD5)");
 		this.remote = remote;
 		this.transport = transport;
+		
+		java.io.File home = new java.io.File(System.getProperty("user.home"), ".googlefs");
+		new java.io.File(home, "cache").mkdirs();
+		new java.io.File(home, "uploads").mkdirs();
+		new java.io.File(home, "auth").mkdirs();
 	}
 	
 	com.google.api.services.drive.Drive getRemote()
