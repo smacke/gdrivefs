@@ -3,7 +3,9 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 import java.util.Collections;
+import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.concurrent.TimeUnit;
 
 import net.fusejna.DirectoryFiller;
 import net.fusejna.ErrorCodes;
@@ -41,7 +43,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		this.drive = drive;
 	}
 	
-	public static void main(final String... args) throws FuseException, GeneralSecurityException, IOException
+	public static void main(final String... args) throws FuseException, GeneralSecurityException, IOException, InterruptedException
 	{
 		if (args.length != 1) {
 			System.err.println("Usage: MemoryFS <mountpoint>");
@@ -58,7 +60,39 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		com.google.api.services.drive.Drive remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
 		com.gdrivefs.cache.Drive drive = new com.gdrivefs.cache.Drive(remote, httpTransport);
 		
-		new GoogleFS(drive, httpTransport).log(true).mount(args[0]);
+		GoogleFS filesystem = null;
+		
+		try
+		{
+			// Create and mount the filesystem
+			filesystem = new GoogleFS(drive, httpTransport);
+			filesystem.log(true);
+			filesystem.mount(new java.io.File(args[0]), false);
+			
+			// Warm the cache by prefetching the drive root, which greatly improves the user experience
+			filesystem.getRoot().getChildren();
+			filesystem.getRoot().considerAsyncDirectoryRefresh(1, TimeUnit.HOURS);
+			
+			// Wait for filesystem to be unmounted by the user
+			synchronized(filesystem)
+			{
+				while(filesystem.isMounted()) filesystem.wait();
+			}
+		}
+		finally
+		{
+			if(filesystem != null) filesystem.destroy();
+		}
+	}
+	
+	public synchronized File getRoot() throws IOException
+	{
+		return drive.getRoot();
+	}
+	
+	public synchronized File getFile(String id) throws IOException
+	{
+		return drive.getFile(id);
 	}
 
 	@Override
@@ -89,7 +123,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			File f = getCachedPath(drive, path);
+			File f = getCachedPath(path);
 			
 			if(f.isDirectory())
 			{
@@ -130,10 +164,11 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 
 	private File getParentPath(String path) throws IOException
 	{
+		if("/".equals(path)) return drive.getRoot();
 		while(path.endsWith("/")) path = path.substring(0, path.length()-1);
 		path = path.substring(0, path.lastIndexOf("/"));
-		if("".equals(path)) return getCachedPath(drive, "/");
-		else return getCachedPath(drive, path);
+		if("".equals(path)) return getCachedPath("/");
+		else return getCachedPath(path);
 	}
 
 	@Override
@@ -144,7 +179,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		
 		try
 		{
-			try { getCachedPath(drive, path); return -ErrorCodes.EEXIST(); }
+			try { getCachedPath(path); return -ErrorCodes.EEXIST(); }
 			catch(NoSuchElementException e) { /* Do nothing, the directory doesn't yet exist */ }
 			
 			File parent;
@@ -171,9 +206,12 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			File f = getCachedPath(drive, path);
-	
+			File f = getCachedPath(path);
+
 			if(f.isDirectory()) return -ErrorCodes.EISDIR();
+
+			boolean isGoogleDoc = f.getMimeType().startsWith("application/vnd.google-apps.");
+			if(isGoogleDoc) return -ErrorCodes.EMEDIUMTYPE();
 
 			byte[] bytes = f.read(Math.min(size, f.getSize()-offset), offset);
 			buffer.put(bytes);
@@ -195,12 +233,13 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			File directory = getCachedPath(drive, path);
+			File directory = getCachedPath(path);
+			getParentPath(path).considerAsyncDirectoryRefresh(2, TimeUnit.MINUTES);
 			if(!directory.isDirectory()) return -ErrorCodes.ENOTDIR();
 			for(File child : directory.getChildren())
 			{
-				filler.add(child.getTitle());
-				System.out.println("found: "+child+" "+child.getTitle());
+				// Hack to support slashes in file names (swap in and out a nearly identical UTF-8 character)
+				filler.add(child.getTitle().replaceAll("/", "∕"));
 			}
 		}
 		catch(NoSuchElementException e)
@@ -215,26 +254,28 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 		return 0;
 	}
 	
-	private static File getCachedPath(Drive drive, String localPath) throws IOException
+	private File getCachedPath(String localPath) throws IOException
 	{
 		if(!localPath.startsWith("/")) throw new IllegalArgumentException("Expected local path to start with a slash ("+localPath+")");
+		
 		String[] pathElements = localPath.split("/");
+		
+		// Hack to support slashes in file names (swap in and out a nearly identical UTF-8 character)
+		for(int i = 0; i < pathElements.length; i++)
+			pathElements[i] = pathElements[i].replaceAll("∕", "/");
 		
 		File current = drive.getRoot();
 		for(int i = 1; i < pathElements.length; i++)
 		{
 			if("".equals(pathElements[i])) continue;
 			
-			File candidateChild = null;
-			for(File child : current.getChildren()) 
-				if(pathElements[i].equals(child.getTitle()))
-					if(candidateChild == null) candidateChild = child;
-					else throw new AmbiguousPathException(localPath);
-			
-			if(candidateChild == null) throw new NoSuchElementException(localPath);
-			current = candidateChild;
+			List<File> children = current.getChildren(pathElements[i]);
+			if(children.isEmpty()) throw new NoSuchElementException(localPath);
+			else if(children.size() == 1) current = children.get(0);
+			else throw new AmbiguousPathException(localPath);
 		}
 		
+		if(current.isDirectory()) current.considerAsyncDirectoryRefresh(1, TimeUnit.MINUTES);
 		return current;
 	}
 
@@ -243,7 +284,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			File file = getCachedPath(drive, oldPath);
+			File file = getCachedPath(oldPath);
 			File oldParent = getParentPath(oldPath);
 			File newParent = getParentPath(newPath);
 			String oldName = getLastComponent(oldPath);
@@ -279,7 +320,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			File directory = getCachedPath(drive, path);
+			File directory = getCachedPath(path);
 			if(!directory.isDirectory()) return -ErrorCodes.ENOTDIR();
 			
 			if(directory.getParents().size() > 1) getParentPath(path).removeChild(directory);
@@ -322,7 +363,7 @@ public class GoogleFS extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			File file = getCachedPath(drive, path);
+			File file = getCachedPath(path);
 			if(file.getParents().size() > 1) getParentPath(path).removeChild(file);
 			else
 			{

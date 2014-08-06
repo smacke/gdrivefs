@@ -8,9 +8,14 @@ import java.net.URL;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
 import java.util.Date;
+import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
@@ -35,29 +40,18 @@ public class File
 	Drive drive;
 	
 	// Cache (null indicates field must be fetched from db)
+	Date metadataAsOfDate;
+	Date childrenAsOfDate;
 	String title;
 	String fileMd5;
 	URL downloadUrl;
-	Boolean isDirectory;
+	String mimeType;
 	Long size;
 	Timestamp modifiedTime;
 	List<File> children;
 	List<File> parents;
 	
-	/** Returns a new file representing the root of the drive **/
-	File(Drive drive) throws IOException
-	{
-		this(drive, getRootId(drive));
-	}
-	
-	/** Returns a new file representing the specified remote file **/
-	File(Drive drive, com.google.api.services.drive.model.File file) throws IOException
-	{
-		this.drive = drive;
-		this.id = file.getId();
-		
-		observeFile(drive, file);
-	}
+	static final Executor worker = Executors.newSingleThreadExecutor();
 	
 	File(Drive drive, String id) throws IOException
 	{
@@ -80,37 +74,25 @@ public class File
 	private void readBasicMetadata(DatabaseRow row) throws MalformedURLException
 	{
 		title = row.getString("TITLE");
-		isDirectory = row.getString("MD5HEX") == null;
+		mimeType = row.getString("MIMETYPE");
 		size = row.getLong("SIZE");
 		modifiedTime = row.getTimestamp("MTIME");
+		metadataAsOfDate = row.getTimestamp("METADATAREFRESHED");
+		childrenAsOfDate = row.getTimestamp("CHILDRENREFRESHED");
 		fileMd5 = row.getString("MD5HEX");
 		downloadUrl = row.getString("DOWNLOADURL") != null ? new URL(row.getString("DOWNLOADURL")) : null;
 	}
 	
 	public void refresh() throws IOException
 	{
-		observeFile(drive, drive.getRemote().files().get(id).execute());
-		readBasicMetadata();
+		Date asof = new Date();
+		com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(id).execute();
+		refresh(metadata, asof);
 	}
 	
 	String getId()
 	{
 		return id;
-	}
-	
-	private static String getRootId(Drive drive) throws IOException
-	{
-		try
-		{
-			return drive.getDatabase().getString("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT IS NULL");
-		}
-		catch(NoSuchElementException e)
-		{
-			String id = drive.getRemote().about().get().execute().getRootFolderId();
-			com.google.api.services.drive.model.File file = drive.getRemote().files().get(id).execute();
-			observeFile(drive, file);
-			return id;
-		}
 	}
 	
 	private void clearChildrenCache()
@@ -119,9 +101,93 @@ public class File
 		children = null;
 	}
 	
+	/**
+	 * Refresh this file if the file hasn't been refreshed recently (within threshold).
+	 */
+	public void considerSynchronousDirectoryRefresh(long threshold, TimeUnit units) throws IOException
+	{
+		if(!isDirectory()) throw new Error("This method must not be called on non-directories; called on "+id+"; consider calling method on this file's parent");
+
+		Date updateThreshold = new Date(System.currentTimeMillis()-units.toMillis(threshold));
+		if(getMetadataDate().before(updateThreshold)) refresh();
+		if(getChildrenDate().before(updateThreshold)) updateChildrenFromRemote();
+	}
+	
+	/**
+	 * Asynchronously refresh this file if the file hasn't been refreshed recently (within threshold).
+	 */
+	public void considerAsyncDirectoryRefresh(final long threshold, final TimeUnit units)
+	{
+		// Sanity check that we are in fact calling this method on a directory.
+		// We do the mimecheck ourselves instead of calling isDirectory() to avoid potentially doing I/O on an asynchronous code path
+		if(Boolean.FALSE.equals(isDirectoryNoIO()))
+			throw new Error("This method must not be called on non-directories; called on "+id+"; consider calling method on this file's parent");
+		
+		worker.execute(new Runnable()
+		{
+			@Override
+			public void run()
+			{
+				try
+				{
+					considerSynchronousDirectoryRefresh(threshold, units);
+				}
+				catch(IOException e)
+				{
+					throw new RuntimeException();
+				}
+			}
+		});
+	}
+
+	public List<File> getChildren(String title) throws IOException
+	{
+		List<File> children = getChildrenInternal(title);
+		
+		if(!children.isEmpty()) return children;
+		
+		// If we get to this point, it means the user was looking for a specific child, but that child was not found.
+		// Sometimes this implies the user has some knowledge about an update that we're as-of-yet unaware-of, and are trying to access that file.
+		// We can use this information to be more aggressive about doing a fetch, but since 404's are a perfectly valid FS outcome, we don't want to block every time.
+		// If the user was correct, and there was an update available, it means this heuristic is working, so we continue to use the heuristic.
+		// If the user was wrong, we back off exponentially, thereby avoiding a heuristic that isn't working for this user.
+		
+		// Do not retry if we're backing off, and do not retry if the last attempt was less than a second ago.
+		if(drive.nextFileNotFoundAttempt > System.currentTimeMillis()) return children;
+		if(getChildrenDate().after(new Date(System.currentTimeMillis()-1000))) return children;
+
+		// Perform refresh
+		considerSynchronousDirectoryRefresh(1, TimeUnit.SECONDS);
+		
+		// Get a new list of children
+		children = getChildrenInternal(title);
+		
+		// If the children changed, we were successful.  Else, heuristic failed so we backoff.
+		if(children.size() > 0){ System.out.println("resetting counter"); drive.fileNotFoundBackoff.reset(); }
+		else {long timeout = drive.fileNotFoundBackoff.nextBackOffMillis(); System.out.println("new timeout: "+timeout); drive.nextFileNotFoundAttempt = System.currentTimeMillis()+timeout; }
+
+		return children;
+	}
+	
+	private List<File> getChildrenInternal(String title) throws IOException
+	{
+		List<File> children = new ArrayList<File>();
+		for(File child : getChildren())
+			if(title.equals(child.getTitle()))
+				children.add(child);
+		return children;
+	}
+	
 	public List<File> getChildren() throws IOException
 	{
-		if(children != null) return children;
+		if(children != null)
+		{
+			considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+			for(File child : children)
+				if(child.isDirectory())
+					child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+			return children;
+		}
 		
 		children = new ArrayList<File>();
 		if(!isDirectory()) return children;
@@ -130,66 +196,123 @@ public class File
 		{
 			List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", id);
 			for(String file : files) children.add(drive.getFile(file));
-			if(!children.isEmpty()) return children;
+			if(!children.isEmpty())
+			{
+				considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+				for(File child : children)
+					if(child.isDirectory())
+						child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+				return children;
+			}
 		}
 		catch(IOException e)
 		{
 			throw new RuntimeException(e);
 		}
 		
+		updateChildrenFromRemote();
+		considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+		for(File child : children)
+			if(child.isDirectory())
+				child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+		
+		return children;
+	}
+	
+	void updateChildrenFromRemote()
+	{
+		List<File> children = new ArrayList<File>();
 		try
 		{
+			Date childrenUpdateDate = new Date();
 			com.google.api.services.drive.Drive.Files.List lst = drive.getRemote().files().list().setQ("'"+id+"' in parents and trashed=false");
 			do
 			{
-				try
+				FileList files = lst.execute();
+				drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE PARENT=?", id);
+				for(com.google.api.services.drive.model.File child : files.getItems())
 				{
-					FileList files = lst.execute();
-					for(com.google.api.services.drive.model.File child : files.getItems()) children.add(drive.getFile(child));
-					lst.setPageToken(files.getNextPageToken());
+					File f = drive.getFile(child.getId());
+					f.refresh(child, childrenUpdateDate);
+					children.add(f);
 				}
-				catch(IOException e)
-				{
-					System.out.println("An error occurred: " + e);
-					lst.setPageToken(null);
-				}
+				lst.setPageToken(files.getNextPageToken());
 			} while(lst.getPageToken() != null && lst.getPageToken().length() > 0);
+			
+			this.children = children;
+			drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = ? WHERE ID = ?", childrenUpdateDate, id);
+			this.childrenAsOfDate = childrenUpdateDate;
 		}
 		catch(IOException e)
 		{
 			throw new RuntimeException(e);
 		}
-		return children;
 	}
 	
-	static void observeFile(Drive drive, com.google.api.services.drive.model.File file)
+	synchronized void refresh(com.google.api.services.drive.model.File file, Date asof) throws IOException
 	{
+		if(!id.equals(file.getId())) throw new Error("Attempting to refresh "+id+" using remote file "+file.getId());
+		
+		GregorianCalendar nextUpdateTimestamp = new GregorianCalendar();
+		nextUpdateTimestamp.add(Calendar.DAY_OF_YEAR, 1);
+		
 		drive.getDatabase().execute("DELETE FROM FILES WHERE ID=?", file.getId());
-		drive.getDatabase().execute("INSERT INTO FILES(ID, TITLE, MD5HEX, SIZE, MTIME, DOWNLOADURL) VALUES(?,?,?,?,?,?)", file.getId(), file.getTitle(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl());
+		drive.getDatabase().execute("INSERT INTO FILES(ID, TITLE, MIMETYPE, MD5HEX, SIZE, MTIME, DOWNLOADURL, METADATAREFRESHED, CHILDRENREFRESHED) VALUES(?,?,?,?,?,?,?,?,?)", file.getId(), file.getTitle(), file.getMimeType(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl(), asof, childrenAsOfDate != null ? childrenAsOfDate : new Date(1));
 		
 		drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE CHILD=?", file.getId());
 		if(file.getParents().isEmpty())
 			drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", null, file.getId());
 		for(ParentReference parent : file.getParents())
 			drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", parent.getId(), file.getId());
+
+		readBasicMetadata();
 	}
 	
 	public String getTitle() throws IOException
 	{
 		if(title == null) readBasicMetadata();
+		
+		// Somebody appears to be watching this file; let's keep it up-to-date
+		if(isDirectory()) considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+		else if(parents != null) for(File file : parents) file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+		
 		return title;
+	}
+	
+	public String getMimeType() throws IOException
+	{
+		if(mimeType == null) readBasicMetadata();
+		return mimeType;
+	}
+	
+	Boolean isDirectoryNoIO()
+	{
+		if(mimeType == null) return null;
+		return MIME_FOLDER.equals(mimeType);
 	}
 	
 	public boolean isDirectory() throws IOException
 	{
-		if(isDirectory == null) readBasicMetadata();
-		return isDirectory;
+		if(mimeType == null) readBasicMetadata();
+		return isDirectoryNoIO();
 	}
 	
 	public long getSize() throws IOException
 	{
 		if(size == null) readBasicMetadata();
 		return size;
+	}
+	
+	public Date getMetadataDate() throws IOException
+	{
+		if(metadataAsOfDate == null) readBasicMetadata();
+		return metadataAsOfDate;
+	}
+	
+	public Date getChildrenDate() throws IOException
+	{
+		if(childrenAsOfDate == null) updateChildrenFromRemote();
+		return childrenAsOfDate;
 	}
 	
 	public Timestamp getModified() throws IOException
@@ -207,6 +330,10 @@ public class File
 	public String getMd5Checksum() throws IOException
 	{
 		if(isDirectory()) return null;
+		
+		// Somebody appears to be watching this file; let's keep it up-to-date
+		for(File file : getParents()) file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+		
 		if(fileMd5 == null) readBasicMetadata();
 		return fileMd5;
 	}
@@ -221,7 +348,7 @@ public class File
 		newRemoteDirectory.setParents(Arrays.asList(new ParentReference().setId(id)));
 		
 		newRemoteDirectory = drive.getRemote().files().insert(newRemoteDirectory).execute();
-		File newDirectory = drive.getFile(newRemoteDirectory);
+		File newDirectory = drive.getFile(newRemoteDirectory.getId());
 		
 		clearChildrenCache();
 
