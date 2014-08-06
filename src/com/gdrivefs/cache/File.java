@@ -107,9 +107,7 @@ public class File
 	
 	private synchronized void clearChildrenCache() throws IOException
 	{
-		if(title == null) readBasicMetadata();
 		drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = NULL WHERE ID=?", id);
-		drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE PARENT=?", id);
 		children = null;
 		childrenAsOfDate = null;
 	}
