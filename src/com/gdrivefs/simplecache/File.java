@@ -150,37 +150,8 @@ public class File
 			}
 		});
 	}
-
-	public List<File> getChildren(String title) throws IOException
-	{
-		List<File> children = getChildrenInternal(title);
-		
-		if(!children.isEmpty()) return children;
-		
-		// If we get to this point, it means the user was looking for a specific child, but that child was not found.
-		// Sometimes this implies the user has some knowledge about an update that we're as-of-yet unaware-of, and are trying to access that file.
-		// We can use this information to be more aggressive about doing a fetch, but since 404's are a perfectly valid FS outcome, we don't want to block every time.
-		// If the user was correct, and there was an update available, it means this heuristic is working, so we continue to use the heuristic.
-		// If the user was wrong, we back off exponentially, thereby avoiding a heuristic that isn't working for this user.
-		
-		// Do not retry if we're backing off, and do not retry if the last attempt was less than a second ago.
-		if(drive.nextFileNotFoundAttempt > System.currentTimeMillis()) return children;
-		if(getChildrenDate().after(new Date(System.currentTimeMillis()-1000))) return children;
-
-		// Perform refresh
-		considerSynchronousDirectoryRefresh(1, TimeUnit.SECONDS);
-		
-		// Get a new list of children
-		children = getChildrenInternal(title);
-		
-		// If the children changed, we were successful.  Else, heuristic failed so we backoff.
-		if(children.size() > 0){ System.out.println("resetting counter"); drive.fileNotFoundBackoff.reset(); }
-		else {long timeout = drive.fileNotFoundBackoff.nextBackOffMillis(); System.out.println("new timeout: "+timeout); drive.nextFileNotFoundAttempt = System.currentTimeMillis()+timeout; }
-
-		return children;
-	}
 	
-	private List<File> getChildrenInternal(String title) throws IOException
+	public List<File> getChildren(String title) throws IOException
 	{
 		List<File> children = new ArrayList<File>();
 		for(File child : getChildren())

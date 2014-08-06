@@ -21,9 +21,6 @@ public class Drive
     HttpTransport transport;
 	com.google.api.services.drive.Drive remote;
 	
-	long nextFileNotFoundAttempt = System.currentTimeMillis();
-	ExponentialBackOff fileNotFoundBackoff = new ExponentialBackOff.Builder().setMaxElapsedTimeMillis(Integer.MAX_VALUE).setMaxIntervalMillis(Integer.MAX_VALUE).build();
-	
 	// Drive-wide singularity cache
 	// TODO: Use soft references and clear the map when references are dropped
 	Map<String, File> files = new HashMap<String, File>();
