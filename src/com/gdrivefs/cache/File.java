@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -27,8 +28,10 @@ import com.google.api.client.http.HttpResponse;
 import com.google.api.client.util.IOUtils;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
+import com.jimsproch.sql.Database;
 import com.jimsproch.sql.DatabaseConnectionException;
 import com.jimsproch.sql.DatabaseRow;
+import com.jimsproch.sql.Transaction;
 
 /**
  * File represents a particular remote file (as represented by Google's file ID), but provides a clean interface for performing reads and writes
@@ -87,7 +90,14 @@ public class File
 	{
 		Date asof = new Date();
 		com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(id).execute();
-		refresh(metadata, asof);
+		try
+		{
+			refresh(metadata, asof);
+		}
+		catch(SQLException e)
+		{
+			throw new IOException(e);
+		}
 	}
 	
 	String getId()
@@ -189,25 +199,35 @@ public class File
 			return children;
 		}
 		
-		children = new ArrayList<File>();
 		if(!isDirectory()) return children;
 		
 		try
 		{
-			List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", id);
-			for(String file : files) children.add(drive.getFile(file));
-			if(!children.isEmpty())
-			{
-				considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
-				for(File child : children)
-					if(child.isDirectory())
-						child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
-				return children;
-			}
+			children = drive.getDatabase().execute(new Transaction<List<File>>()
+				{
+					@Override
+					public List<File> run(Database db) throws Throwable
+					{
+						List<File> children = new ArrayList<File>();
+						List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", id);
+						for(String file : files) children.add(drive.getFile(file));
+						if(!children.isEmpty())
+						{
+							considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+							for(File child : children)
+								if(child.isDirectory())
+									child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+							return children;
+						}
+						return children;
+					}
+				}
+			);
 		}
-		catch(IOException e)
+		catch(SQLException e1)
 		{
-			throw new RuntimeException(e);
+			e1.printStackTrace();
+			throw new RuntimeException(e1);
 		}
 		
 		updateChildrenFromRemote();
@@ -221,49 +241,78 @@ public class File
 	
 	void updateChildrenFromRemote()
 	{
-		List<File> children = new ArrayList<File>();
 		try
 		{
-			Date childrenUpdateDate = new Date();
+			final Date childrenUpdateDate = new Date();
 			com.google.api.services.drive.Drive.Files.List lst = drive.getRemote().files().list().setQ("'"+id+"' in parents and trashed=false");
+			final List<com.google.api.services.drive.model.File> googleChildren = new ArrayList<com.google.api.services.drive.model.File>();
 			do
 			{
 				FileList files = lst.execute();
-				drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE PARENT=?", id);
 				for(com.google.api.services.drive.model.File child : files.getItems())
-				{
-					File f = drive.getFile(child.getId());
-					f.refresh(child, childrenUpdateDate);
-					children.add(f);
-				}
+					googleChildren.add(child);
 				lst.setPageToken(files.getNextPageToken());
 			} while(lst.getPageToken() != null && lst.getPageToken().length() > 0);
+
+			children = drive.getDatabase().execute(new Transaction<List<File>>()
+			{
+				@Override
+				public List<File> run(Database arg0) throws Throwable
+				{
+					List<File> children = new ArrayList<File>();
+					drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE PARENT=?", id);
+					for(com.google.api.services.drive.model.File child : googleChildren)
+					{
+						children.add(drive.getFile(child.getId()));
+					}
+					return children;
+				}
+			});
 			
-			this.children = children;
+			for(com.google.api.services.drive.model.File child : googleChildren)
+				drive.getFile(child.getId()).refresh(child, childrenUpdateDate);
+			
 			drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = ? WHERE ID = ?", childrenUpdateDate, id);
 			this.childrenAsOfDate = childrenUpdateDate;
 		}
-		catch(IOException e)
+		catch(Exception e)
 		{
 			throw new RuntimeException(e);
 		}
 	}
 	
-	synchronized void refresh(com.google.api.services.drive.model.File file, Date asof) throws IOException
+	synchronized void refresh(final com.google.api.services.drive.model.File file, final Date asof) throws IOException, SQLException
 	{
 		if(!id.equals(file.getId())) throw new Error("Attempting to refresh "+id+" using remote file "+file.getId());
 		
 		GregorianCalendar nextUpdateTimestamp = new GregorianCalendar();
 		nextUpdateTimestamp.add(Calendar.DAY_OF_YEAR, 1);
+
+		drive.getDatabase().execute(new Transaction<Void>()
+		{
+			@Override
+			public Void run(Database arg0) throws Throwable
+			{
+				drive.getDatabase().execute("DELETE FROM FILES WHERE ID=?", file.getId());
+				drive.getDatabase().execute("INSERT INTO FILES(ID, TITLE, MIMETYPE, MD5HEX, SIZE, MTIME, DOWNLOADURL, METADATAREFRESHED, CHILDRENREFRESHED) VALUES(?,?,?,?,?,?,?,?,?)", file.getId(), file.getTitle(), file.getMimeType(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl(), asof, childrenAsOfDate != null ? childrenAsOfDate : new Date(1));
+				return null;
+			}
+		});
 		
-		drive.getDatabase().execute("DELETE FROM FILES WHERE ID=?", file.getId());
-		drive.getDatabase().execute("INSERT INTO FILES(ID, TITLE, MIMETYPE, MD5HEX, SIZE, MTIME, DOWNLOADURL, METADATAREFRESHED, CHILDRENREFRESHED) VALUES(?,?,?,?,?,?,?,?,?)", file.getId(), file.getTitle(), file.getMimeType(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl(), asof, childrenAsOfDate != null ? childrenAsOfDate : new Date(1));
-		
-		drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE CHILD=?", file.getId());
-		if(file.getParents().isEmpty())
-			drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", null, file.getId());
-		for(ParentReference parent : file.getParents())
-			drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", parent.getId(), file.getId());
+
+		drive.getDatabase().execute(new Transaction<Void>()
+		{
+			@Override
+			public Void run(Database arg0) throws Throwable
+			{
+				drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE CHILD=?", file.getId());
+				if(file.getParents().isEmpty())
+					drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", null, file.getId());
+				for(ParentReference parent : file.getParents())
+					drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", parent.getId(), file.getId());
+				return null;
+			}
+		});
 
 		readBasicMetadata();
 	}
