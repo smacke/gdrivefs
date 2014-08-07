@@ -12,6 +12,7 @@ import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.GregorianCalendar;
+import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
@@ -29,6 +30,7 @@ import com.google.api.client.http.HttpResponse;
 import com.google.api.client.util.IOUtils;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
+import com.google.common.collect.ImmutableSet;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.DatabaseConnectionException;
 import com.jimsproch.sql.DatabaseRow;
@@ -65,6 +67,12 @@ public class File
 		this.googleFileId = id;
 	}
 	
+	File(Drive drive, UUID id) throws IOException
+	{
+		this.drive = drive;
+		this.localFileId = id;
+	}
+	
 	/** Reads basic metadata from the cache, throwing an exception if the file metadata isn't in our database **/
 	private void readBasicMetadata() throws IOException
 	{
@@ -76,20 +84,20 @@ public class File
 		}
 		readBasicMetadata(rows.get(0));
 		
-		playLogOnMemory();
+		playLogOnMemory("metadata");
 	}
 	
-	void playLogOnMemory() throws IOException
+	void playLogOnMemory(String category) throws IOException
 	{
-		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG ORDER BY ID ASC"))
-			playOnMemory((String[])new XStream().fromXML(row.getString("DETAILS")));
+		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE CATEGORY=? ORDER BY ID ASC", category))
+			playOnMemory(row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 	}
 	
 	static void playLogOnRemote(Drive drive) throws IOException
 	{
 		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG ORDER BY ID ASC"))
 		{
-			playOnRemote(drive, (String[])new XStream().fromXML(row.getString("DETAILS")));
+			playOnRemote(drive, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 			drive.getDatabase().execute("DELETE FROM UPDATELOG WHERE ID=?", row.getInteger("ID"));
 		}
 	}
@@ -121,7 +129,7 @@ public class File
 		}
 	}
 	
-	String getId()
+	public String getId()
 	{
 		return googleFileId;
 	}
@@ -551,45 +559,99 @@ public class File
     
     public synchronized void setTitle(String title) throws IOException
     {
-    	if(getTitle().equals(title)) return;
-    	
     	playEverywhere("setTitle", this.getLocalId().toString(), getTitle(), title);
-
     	this.title = title;
     }
     
     /** Writes the action to the database to be replayed on Google's servers later, plays transaction on local memory **/
-    synchronized void playEverywhere(String... logEntry) throws IOException
+    synchronized void playEverywhere(String command, String... logEntry) throws IOException
     {
-    	playOnMemory(logEntry);
-    	drive.getDatabase().execute("INSERT INTO UPDATELOG(DETAILS) VALUES(?)", new XStream().toXML(logEntry)); 
+    	String category = null;
+    	if("setTitle".equals(command)) category = "metadata";
+    	if("addRelationship".equals(command)) category = "relationship";
+    	if("removeRelationship".equals(command)) category = "relationship";
+    	
+    	playOnMemory(command, logEntry);
+    	drive.getDatabase().execute("INSERT INTO UPDATELOG(CATEGORY, COMMAND, DETAILS) VALUES(?,?,?)", category, command, new XStream().toXML(logEntry)); 
     	drive.pokeLogPlayer();
     }
     
-	synchronized void playOnMemory(String... logEntry) throws IOException
+	synchronized void playOnMemory(String command, String... logEntry) throws IOException
 	{
-		if("setTitle".equals(logEntry[0]))
+		if("setTitle".equals(command))
 		{
 			// Sanity checks
-			if(!getLocalId().equals(UUID.fromString(logEntry[1]))) return;
-			if(!getTitle().equals(logEntry[2])) new Throwable("WARNING: Title does not match title from logs (expected: " + logEntry[2] + " was: " + getTitle() + ")").printStackTrace();
+			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
+			if(!getTitle().equals(logEntry[1])) new Throwable("WARNING: Title does not match title from logs (expected: " + logEntry[1] + " was: " + getTitle() + ")").printStackTrace();
 
 			// Perform update
-			title = logEntry[3];
+			title = logEntry[2];
 		}
+		else if("addRelationship".equals(command))
+		{
+			UUID parentLocalId = UUID.fromString(logEntry[0]);
+			UUID childLocalId = UUID.fromString(logEntry[1]);
+			
+			if(getLocalId().equals(parentLocalId) && this.children != null) this.children.add(drive.getFile(childLocalId));
+			if(getLocalId().equals(childLocalId) && this.parents != null) this.parents.add(drive.getFile(parentLocalId));
+		}
+		else if("removeRelationship".equals(command))
+		{
+			UUID childId = UUID.fromString(logEntry[1]);
+			UUID parentId = UUID.fromString(logEntry[0]);
+			
+			File child = getLocalId().equals(childId) ? this : null;
+			File parent = getLocalId().equals(parentId) ? this : null;
+
+			System.out.println("writing local: "+Arrays.toString(logEntry));
+			System.out.println("writing locale: "+child+" "+parent);
+			if(child == null && parent == null) return;
+
+			if(parent != null)
+				for(File f : parent.getChildren())
+					if(childId.equals(f.getLocalId()))
+						child = f;
+			if(child != null)
+				for(File f : child.getParents())
+					if(parentId.equals(f.getLocalId()))
+						parent = f;
+
+			if(parent.children != null) parent.children.remove(child);
+			if(child.parents != null) child.parents.remove(parent);
+		}
+		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
 
-	static synchronized void playOnRemote(Drive drive, String... logEntry) throws IOException
+	static synchronized void playOnRemote(Drive drive, String command, String... logEntry) throws IOException
 	{
-		if("setTitle".equals(logEntry[0]))
+		if("setTitle".equals(command))
 		{
 			// Perform update
-			String googleFileId = getGoogleId(drive, UUID.fromString(logEntry[1]));
+			String googleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
 			com.google.api.services.drive.model.File file = drive.getRemote().files().get(googleFileId).execute();
-			if(!file.getTitle().equals(logEntry[2])) new Throwable("WARNING: Title does not match title from logs (expected: " + logEntry[2] + " was: " + file.getTitle() + ")").printStackTrace();
-			file.setTitle(logEntry[3]);
+			if(!file.getTitle().equals(logEntry[1])) new Throwable("WARNING: Title does not match title from logs (expected: " + logEntry[1] + " was: " + file.getTitle() + ")").printStackTrace();
+			file.setTitle(logEntry[2]);
 			drive.getRemote().files().update(googleFileId, file).execute();
 		}
+		else if("addRelationship".equals(command))
+		{
+			String parentGoogleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
+			String childGoogleFileId = getGoogleId(drive, UUID.fromString(logEntry[1]));
+		
+			ParentReference newParent = new ParentReference();
+			newParent.setId(parentGoogleFileId);
+			drive.getRemote().parents().insert(childGoogleFileId, newParent).execute();
+			System.out.println("INSERTED "+childGoogleFileId+" into "+newParent+" on remote");
+		}
+		else if("removeRelationship".equals(command))
+		{
+			System.out.println("writing remote: "+Arrays.toString(logEntry));
+			String parentGoogleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
+			String childGoogleFileId = getGoogleId(drive, UUID.fromString(logEntry[1]));
+			
+			drive.getRemote().parents().delete(childGoogleFileId, parentGoogleFileId).execute();
+		}
+		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
 	
 	static String getGoogleId(Drive drive, UUID localId)
@@ -597,30 +659,29 @@ public class File
 		return drive.getDatabase().getString("SELECT ID FROM FILES WHERE LOCALID=?", localId.toString());
 	}
 
-    public List<File> getParents() throws IOException
-    {
-    	if(parents == null) parents = new ArrayList<File>();
-    	for(ParentReference parent : drive.getRemote().files().get(googleFileId).execute().getParents())
-    		parents.add(drive.getFile(parent.getId()));
-    	return parents;
+	public synchronized List<File> getParents() throws IOException
+	{
+		parents = new ArrayList<File>();
+		for(ParentReference parent : drive.getRemote().files().get(googleFileId).execute().getParents())
+			parents.add(drive.getFile(parent.getId()));
+		playLogOnMemory("relationship");
+		return parents;
 	}
 
 	public void addChild(File child) throws IOException
 	{
+		if(child.getParents().contains(this)) return;
 		if(!isDirectory()) throw new UnsupportedOperationException("Can not add child to non-directory");
 
-		ParentReference newParent = new ParentReference();
-		newParent.setId(getId());
-		drive.getRemote().parents().insert(child.getId(), newParent).execute();
-
-		clearChildrenCache();
+		playEverywhere("addRelationship", this.getLocalId().toString(), child.getLocalId().toString());
 	}
 
 	public void removeChild(File child) throws IOException
 	{
+		if(!this.getChildren().contains(child)) return;
 		if(child.getParents().size() <= 1) throw new UnsupportedOperationException("Child must have at least one parent");
-		drive.getRemote().parents().delete(child.getId(), getId()).execute();
-		clearChildrenCache();
+
+		playEverywhere("removeRelationship", this.getLocalId().toString(), child.getLocalId().toString());
 	}
 
 	public void trash() throws IOException
@@ -632,6 +693,22 @@ public class File
 		// Clear the parent's cache of children
 		for(File parent : parents)
 			parent.clearChildrenCache();
+	}
+	
+	@Override
+	public boolean equals(Object other)
+	{
+		if(!File.class.equals(other.getClass())) return false;
+		if(this.getId() != null && this.getId().equals(((File)other).getId())) return true;
+		try
+		{
+			if(this.getLocalId().equals(((File)other).getLocalId())) return true;
+		}
+		catch(IOException e)
+		{
+			return false;
+		}
+		return false;
 	}
     
     @Override

@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
@@ -24,7 +25,8 @@ public class Drive
 	
 	// Drive-wide singularity cache
 	// TODO: Use soft references and clear the map when references are dropped
-	Map<String, File> files = new HashMap<String, File>();
+	Map<String, File> googleFiles = new HashMap<String, File>();
+	Map<UUID, File> unsyncedFiles = new HashMap<UUID, File>();
 
 	static final Executor logPlayer = Executors.newSingleThreadExecutor();
 	
@@ -44,7 +46,7 @@ public class Drive
 		// When updating the memory model, you must select from the other tables and then iterate over this table to replay changes that have yet to be sync'd
 		// Rows from this table may be played somewhat out of order (eg. uploads take a long time and might be delayed, while deletes might happen immediately), though in-order is ideal) so long as it doesn't break any individual file's logical view of the world
 		// ID allows the table to be sorted by logical event ID for replaying, isdone indicates if Google should be aware of the change, and details stores details of the task
-		db.execute("CREATE TABLE UPDATELOG(ID INTEGER NOT NULL GENERATED ALWAYS AS IDENTITY (START WITH 1, INCREMENT BY 1), ISDONE SMALLINT DEFAULT 0, DETAILS CLOB)");
+		db.execute("CREATE TABLE UPDATELOG(ID INTEGER NOT NULL GENERATED ALWAYS AS IDENTITY (START WITH 1, INCREMENT BY 1), CATEGORY VARCHAR(64), COMMAND VARCHAR(64), ISDONE SMALLINT DEFAULT 0, DETAILS CLOB)");
 
 		db.execute("CREATE UNIQUE INDEX FILE_ID ON FILES(ID)");
 		db.execute("CREATE UNIQUE INDEX RELATIONSHIPS_CHILD_PARENT ON RELATIONSHIPS(CHILD, PARENT)");
@@ -87,11 +89,28 @@ public class Drive
 	
 	public synchronized File getFile(String id) throws IOException
 	{
-		File file = files.get(id);
+		File file = googleFiles.get(id);
 		if(file == null)
 		{
 			file = new File(this, id);
-			files.put(file.getId(), file);
+			googleFiles.put(file.getId(), file);
+		}
+		return file;
+	}
+	
+	public synchronized File getFile(UUID id) throws IOException
+	{
+		String googleId = File.getGoogleId(this, id);
+		if(googleId != null)
+		{
+			unsyncedFiles.remove(id);
+			return googleFiles.get(googleId);
+		}
+		File file = unsyncedFiles.get(id);
+		if(file == null)
+		{
+			file = new File(this, id);
+			unsyncedFiles.put(id, file);
 		}
 		return file;
 	}
