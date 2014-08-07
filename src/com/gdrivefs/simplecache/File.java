@@ -77,10 +77,14 @@ public class File
 	/** Reads basic metadata from the cache, throwing an exception if the file metadata isn't in our database **/
 	private void readBasicMetadata() throws IOException
 	{
+		if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or lock required");
 		List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", googleFileId);
 		if(rows.size() == 0)
 		{
-			refresh();
+			Date asof = new Date();
+			com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(googleFileId).execute();
+			try { refresh(metadata, asof); }
+			catch(SQLException e) {}
 			rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", googleFileId);
 		}
 		readBasicMetadata(rows.get(0));
@@ -118,15 +122,23 @@ public class File
 	
 	public void refresh() throws IOException
 	{
-		Date asof = new Date();
-		com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(googleFileId).execute();
+		lock.writeLock().lock();
 		try
 		{
-			refresh(metadata, asof);
+			Date asof = new Date();
+			com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(googleFileId).execute();
+			try
+			{
+				refresh(metadata, asof);
+			}
+			catch(SQLException e)
+			{
+				throw new IOException(e);
+			}
 		}
-		catch(SQLException e)
+		finally
 		{
-			throw new IOException(e);
+			lock.writeLock().unlock();
 		}
 	}
 	
@@ -147,11 +159,19 @@ public class File
 	 */
 	public void considerSynchronousDirectoryRefresh(long threshold, TimeUnit units) throws IOException
 	{
-		if(!isDirectory()) throw new Error("This method must not be called on non-directories; called on "+googleFileId+"; consider calling method on this file's parent");
-
-		Date updateThreshold = new Date(System.currentTimeMillis()-units.toMillis(threshold));
-		if(getMetadataDate().before(updateThreshold)) refresh();
-		if(getChildrenDate().before(updateThreshold)) updateChildrenFromRemote();
+		lock.writeLock().lock();
+		try
+		{
+			if(!isDirectory()) throw new Error("This method must not be called on non-directories; called on "+googleFileId+"; consider calling method on this file's parent");
+	
+			Date updateThreshold = new Date(System.currentTimeMillis()-units.toMillis(threshold));
+			if(getMetadataDate().before(updateThreshold)) refresh();
+			if(getChildrenDate().before(updateThreshold)) updateChildrenFromRemote();
+		}
+		finally
+		{
+			lock.writeLock().unlock();
+		}
 	}
 	
 	/**
@@ -192,61 +212,71 @@ public class File
 	
 	public List<File> getChildren() throws IOException
 	{
-		if(children != null)
+		lock.readLock().lock();
+		try
 		{
+			if(children != null)
+			{
+				considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+				for(File child : children)
+					if(child.isDirectory())
+						child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+				return children;
+			}
+			
+			if(!isDirectory()) return children;
+			
+			try
+			{
+				synchronized(this)
+				{
+					if(childrenAsOfDate != null)
+						children = drive.getDatabase().execute(new Transaction<List<File>>()
+							{
+								@Override
+								public List<File> run(Database db) throws Throwable
+								{
+									List<File> children = new ArrayList<File>();
+									List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", googleFileId);
+									for(String file : files) children.add(drive.getFile(file));
+									if(!children.isEmpty())
+									{
+										considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+										for(File child : children)
+											if(child.isDirectory())
+												child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+										return children;
+									}
+									return null;
+								}
+							}
+						);
+				}
+			}
+			catch(SQLException e1)
+			{
+				e1.printStackTrace();
+				throw new RuntimeException(e1);
+			}
+			
+			updateChildrenFromRemote();
 			considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
 			for(File child : children)
 				if(child.isDirectory())
 					child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+			
 			return children;
 		}
-		
-		if(!isDirectory()) return children;
-		
-		try
+		finally
 		{
-			synchronized(this)
-			{
-				if(childrenAsOfDate != null)
-					children = drive.getDatabase().execute(new Transaction<List<File>>()
-						{
-							@Override
-							public List<File> run(Database db) throws Throwable
-							{
-								List<File> children = new ArrayList<File>();
-								List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", googleFileId);
-								for(String file : files) children.add(drive.getFile(file));
-								if(!children.isEmpty())
-								{
-									considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
-									for(File child : children)
-										if(child.isDirectory())
-											child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
-									return children;
-								}
-								return null;
-							}
-						}
-					);
-			}
+			lock.readLock().unlock();
 		}
-		catch(SQLException e1)
-		{
-			e1.printStackTrace();
-			throw new RuntimeException(e1);
-		}
-		
-		updateChildrenFromRemote();
-		considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
-		for(File child : children)
-			if(child.isDirectory())
-				child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
-		
-		return children;
 	}
 	
-	void updateChildrenFromRemote()
+	private void updateChildrenFromRemote()
 	{
+		if(children != null && !lock.isWriteLockedByCurrentThread()) throw new Error("Children cached, so doibng a remote fetch require a write lock!");
+
 		try
 		{
 			final Date childrenUpdateDate = new Date();
@@ -276,14 +306,32 @@ public class File
 				}
 			});
 			
-			for(com.google.api.services.drive.model.File child : googleChildren)
-				drive.getFile(child.getId()).refresh(child, childrenUpdateDate);
+			// We happen to have metadata for our children available, so we should have the worker update them at earliest convinence
+			for(final com.google.api.services.drive.model.File child : googleChildren)
+				worker.execute(new Runnable(){
+					@Override
+					public void run()
+					{
+						try
+						{
+							File f = drive.getFile(child.getId());
+							f.lock.writeLock().lock();
+							try { f.refresh(child, childrenUpdateDate); }
+							finally { f.lock.writeLock().unlock(); }
+						}
+						catch(IOException e)
+						{
+							throw new RuntimeException(e);
+						}
+						catch(SQLException e)
+						{
+							throw new RuntimeException(e);
+						}
+					}});
 			
-			synchronized(this)
-			{
-				drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = ? WHERE ID = ?", childrenUpdateDate, googleFileId);
-				this.childrenAsOfDate = childrenUpdateDate;
-			}
+			// Sketchy as hell, but I can't think of any way that updating the timestamp could cause a fatal race condition
+			drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = ? WHERE ID = ?", childrenUpdateDate, googleFileId);
+			this.childrenAsOfDate = childrenUpdateDate;
 		}
 		catch(Exception e)
 		{
@@ -291,8 +339,9 @@ public class File
 		}
 	}
 	
-	synchronized void refresh(final com.google.api.services.drive.model.File file, final Date asof) throws IOException, SQLException
+	private synchronized void refresh(final com.google.api.services.drive.model.File file, final Date asof) throws IOException, SQLException
 	{
+		if(title != null && !lock.isWriteLockedByCurrentThread()) throw new Error("Refreshing data requires a write lock!");
 		if(!googleFileId.equals(file.getId())) throw new Error("Attempting to refresh "+googleFileId+" using remote file "+file.getId());
 		
 		GregorianCalendar nextUpdateTimestamp = new GregorianCalendar();
@@ -331,92 +380,170 @@ public class File
 	
 	public String getTitle() throws IOException
 	{
-		if(title == null) readBasicMetadata();
-		
-		// Somebody appears to be watching this file; let's keep it up-to-date
-		if(isDirectory()) considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
-		else if(parents != null) for(File file : parents) file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
-		
-		return title;
+		lock.readLock().lock();
+		try
+		{
+			if(title == null) readBasicMetadata();
+			
+			// Somebody appears to be watching this file; let's keep it up-to-date
+			if(isDirectory()) considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+			else if(parents != null) for(File file : parents) file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+			
+			return title;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
 	
 	public String getMimeType() throws IOException
 	{
-		if(mimeType == null) readBasicMetadata();
-		return mimeType;
+		lock.readLock().lock();
+		try
+		{
+			if(mimeType == null) readBasicMetadata();
+			return mimeType;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
 	
 	Boolean isDirectoryNoIO()
 	{
+		String mimeType = this.mimeType;
 		if(mimeType == null) return null;
 		return MIME_FOLDER.equals(mimeType);
 	}
 	
 	public boolean isDirectory() throws IOException
 	{
-		if(mimeType == null) readBasicMetadata();
-		return isDirectoryNoIO();
+		lock.readLock().lock();
+		try
+		{
+			if(mimeType == null) readBasicMetadata();
+			return isDirectoryNoIO();
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
 	
 	public long getSize() throws IOException
 	{
-		if(size == null) readBasicMetadata();
-		return size;
+		lock.readLock().lock();
+		try
+		{
+			if(size == null) readBasicMetadata();
+			return size;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
 	
 	public Date getMetadataDate() throws IOException
 	{
-		if(metadataAsOfDate == null) readBasicMetadata();
-		return metadataAsOfDate;
+		lock.readLock().lock();
+		try
+		{
+			if(metadataAsOfDate == null) readBasicMetadata();
+			return metadataAsOfDate;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
 	
 	public Date getChildrenDate() throws IOException
 	{
-		synchronized(this)
+		lock.readLock().lock();
+		try
 		{
 			if(metadataAsOfDate == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
 			if(childrenAsOfDate == null) updateChildrenFromRemote();
 			return childrenAsOfDate;
 		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
 	
 	public Timestamp getModified() throws IOException
 	{
-		if(modifiedTime == null) readBasicMetadata();
-		return modifiedTime;
+		lock.readLock().lock();
+		try
+		{
+			if(modifiedTime == null) readBasicMetadata();
+			return modifiedTime;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
 	
 	public URL getDownloadUrl() throws IOException
 	{
-		if(downloadUrl == null) readBasicMetadata();
-		return downloadUrl;
+		lock.readLock().lock();
+		try
+		{
+			if(downloadUrl == null) readBasicMetadata();
+			return downloadUrl;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
 	
 	public String getMd5Checksum() throws IOException
 	{
-		if(isDirectory()) return null;
-		
-		// Somebody appears to be watching this file; let's keep it up-to-date
-		for(File file : getParents()) file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
-		
-		if(fileMd5 == null) readBasicMetadata();
-		return fileMd5;
+		lock.readLock().lock();
+		try
+		{
+			if(isDirectory()) return null;
+			
+			// Somebody appears to be watching this file; let's keep it up-to-date
+			for(File file : getParents()) file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+			
+			if(fileMd5 == null) readBasicMetadata();
+			return fileMd5;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
 	
 	private static final String MIME_FOLDER = "application/vnd.google-apps.folder";
 	public File mkdir(String name) throws IOException
 	{
-		com.google.api.services.drive.model.File newRemoteDirectory = new com.google.api.services.drive.model.File();
-		newRemoteDirectory.setTitle(name);
-		newRemoteDirectory.setMimeType(MIME_FOLDER);
-		newRemoteDirectory.setParents(Arrays.asList(new ParentReference().setId(googleFileId)));
-		
-		newRemoteDirectory = drive.getRemote().files().insert(newRemoteDirectory).execute();
-		File newDirectory = drive.getFile(newRemoteDirectory.getId());
-		
-		clearChildrenCache();
-
-	    return newDirectory;
+		lock.writeLock().lock();
+		try
+		{
+			com.google.api.services.drive.model.File newRemoteDirectory = new com.google.api.services.drive.model.File();
+			newRemoteDirectory.setTitle(name);
+			newRemoteDirectory.setMimeType(MIME_FOLDER);
+			newRemoteDirectory.setParents(Arrays.asList(new ParentReference().setId(googleFileId)));
+			
+			newRemoteDirectory = drive.getRemote().files().insert(newRemoteDirectory).execute();
+			File newDirectory = drive.getFile(newRemoteDirectory.getId());
+			
+			clearChildrenCache();
+	
+		    return newDirectory;
+		}
+		finally
+		{
+			lock.writeLock().unlock();
+		}
 	}
 		
 	
@@ -424,9 +551,17 @@ public class File
 	
     public byte[] read(final long size, final long offset) throws DatabaseConnectionException, IOException
     {
-		byte[] data = getBytesByAnyMeans(offset, offset + size);
-		if(data.length != size) throw new Error("expected: " + size + " actual: " + data.length + " " + new String(data));
-		return data;
+		lock.readLock().lock();
+		try
+		{
+			byte[] data = getBytesByAnyMeans(offset, offset + size);
+			if(data.length != size) throw new Error("expected: " + size + " actual: " + data.length + " " + new String(data));
+			return data;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
     
     
@@ -589,7 +724,7 @@ public class File
     /** Writes the action to the database to be replayed on Google's servers later, plays transaction on local memory **/
     void playOnDatabase(String command, String... logEntry) throws IOException
     {
-    	if(!lock.isWriteLockedByCurrentThread()) throw new Error("Must acquire write lock!");
+    	if(!lock.isWriteLockedByCurrentThread()) throw new Error("Must acquire write lock if you're doing writes!");
     	String category = null;
     	if("setTitle".equals(command)) category = "metadata";
     	if("addRelationship".equals(command)) category = "relationship";
