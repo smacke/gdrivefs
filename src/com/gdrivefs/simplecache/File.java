@@ -14,6 +14,7 @@ import java.util.Date;
 import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -32,6 +33,7 @@ import com.jimsproch.sql.Database;
 import com.jimsproch.sql.DatabaseConnectionException;
 import com.jimsproch.sql.DatabaseRow;
 import com.jimsproch.sql.Transaction;
+import com.thoughtworks.xstream.XStream;
 
 /**
  * File represents a particular remote file (as represented by Google's file ID), but provides a clean interface for performing reads and writes
@@ -39,7 +41,8 @@ import com.jimsproch.sql.Transaction;
  */
 public class File
 {
-	String id;
+	String googleFileId;
+	UUID localFileId;
 	Drive drive;
 	
 	// Cache (null indicates field must be fetched from db)
@@ -59,19 +62,36 @@ public class File
 	File(Drive drive, String id) throws IOException
 	{
 		this.drive = drive;
-		this.id = id;
+		this.googleFileId = id;
 	}
 	
 	/** Reads basic metadata from the cache, throwing an exception if the file metadata isn't in our database **/
 	private void readBasicMetadata() throws IOException
 	{
-		List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", id);
+		List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", googleFileId);
 		if(rows.size() == 0)
 		{
 			refresh();
-			rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", id);
+			rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", googleFileId);
 		}
 		readBasicMetadata(rows.get(0));
+		
+		playLogOnMemory();
+	}
+	
+	void playLogOnMemory() throws IOException
+	{
+		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG ORDER BY ID ASC"))
+			playOnMemory((String[])new XStream().fromXML(row.getString("DETAILS")));
+	}
+	
+	static void playLogOnRemote(Drive drive) throws IOException
+	{
+		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG ORDER BY ID ASC"))
+		{
+			playOnRemote(drive, (String[])new XStream().fromXML(row.getString("DETAILS")));
+			drive.getDatabase().execute("DELETE FROM UPDATELOG WHERE ID=?", row.getInteger("ID"));
+		}
 	}
 	
 	private void readBasicMetadata(DatabaseRow row) throws MalformedURLException
@@ -82,6 +102,7 @@ public class File
 		modifiedTime = row.getTimestamp("MTIME");
 		metadataAsOfDate = row.getTimestamp("METADATAREFRESHED");
 		childrenAsOfDate = row.getTimestamp("CHILDRENREFRESHED");
+		localFileId = row.getUuid("LOCALID");
 		fileMd5 = row.getString("MD5HEX");
 		downloadUrl = row.getString("DOWNLOADURL") != null ? new URL(row.getString("DOWNLOADURL")) : null;
 	}
@@ -89,7 +110,7 @@ public class File
 	public void refresh() throws IOException
 	{
 		Date asof = new Date();
-		com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(id).execute();
+		com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(googleFileId).execute();
 		try
 		{
 			refresh(metadata, asof);
@@ -102,12 +123,12 @@ public class File
 	
 	String getId()
 	{
-		return id;
+		return googleFileId;
 	}
 	
 	private synchronized void clearChildrenCache() throws IOException
 	{
-		drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = NULL WHERE ID=?", id);
+		drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = NULL WHERE ID=?", googleFileId);
 		children = null;
 		childrenAsOfDate = null;
 	}
@@ -117,7 +138,7 @@ public class File
 	 */
 	public void considerSynchronousDirectoryRefresh(long threshold, TimeUnit units) throws IOException
 	{
-		if(!isDirectory()) throw new Error("This method must not be called on non-directories; called on "+id+"; consider calling method on this file's parent");
+		if(!isDirectory()) throw new Error("This method must not be called on non-directories; called on "+googleFileId+"; consider calling method on this file's parent");
 
 		Date updateThreshold = new Date(System.currentTimeMillis()-units.toMillis(threshold));
 		if(getMetadataDate().before(updateThreshold)) refresh();
@@ -132,7 +153,7 @@ public class File
 		// Sanity check that we are in fact calling this method on a directory.
 		// We do the mimecheck ourselves instead of calling isDirectory() to avoid potentially doing I/O on an asynchronous code path
 		if(Boolean.FALSE.equals(isDirectoryNoIO()))
-			throw new Error("This method must not be called on non-directories; called on "+id+"; consider calling method on this file's parent");
+			throw new Error("This method must not be called on non-directories; called on "+googleFileId+"; consider calling method on this file's parent");
 		
 		worker.execute(new Runnable()
 		{
@@ -184,7 +205,7 @@ public class File
 							public List<File> run(Database db) throws Throwable
 							{
 								List<File> children = new ArrayList<File>();
-								List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", id);
+								List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", googleFileId);
 								for(String file : files) children.add(drive.getFile(file));
 								if(!children.isEmpty())
 								{
@@ -220,7 +241,7 @@ public class File
 		try
 		{
 			final Date childrenUpdateDate = new Date();
-			com.google.api.services.drive.Drive.Files.List lst = drive.getRemote().files().list().setQ("'"+id+"' in parents and trashed=false");
+			com.google.api.services.drive.Drive.Files.List lst = drive.getRemote().files().list().setQ("'"+googleFileId+"' in parents and trashed=false");
 			final List<com.google.api.services.drive.model.File> googleChildren = new ArrayList<com.google.api.services.drive.model.File>();
 			do
 			{
@@ -236,7 +257,7 @@ public class File
 				public List<File> run(Database arg0) throws Throwable
 				{
 					List<File> children = new ArrayList<File>();
-					drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE PARENT=?", id);
+					drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE PARENT=?", googleFileId);
 					for(com.google.api.services.drive.model.File child : googleChildren)
 					{
 						children.add(drive.getFile(child.getId()));
@@ -251,7 +272,7 @@ public class File
 			
 			synchronized(this)
 			{
-				drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = ? WHERE ID = ?", childrenUpdateDate, id);
+				drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = ? WHERE ID = ?", childrenUpdateDate, googleFileId);
 				this.childrenAsOfDate = childrenUpdateDate;
 			}
 		}
@@ -263,7 +284,7 @@ public class File
 	
 	synchronized void refresh(final com.google.api.services.drive.model.File file, final Date asof) throws IOException, SQLException
 	{
-		if(!id.equals(file.getId())) throw new Error("Attempting to refresh "+id+" using remote file "+file.getId());
+		if(!googleFileId.equals(file.getId())) throw new Error("Attempting to refresh "+googleFileId+" using remote file "+file.getId());
 		
 		GregorianCalendar nextUpdateTimestamp = new GregorianCalendar();
 		nextUpdateTimestamp.add(Calendar.DAY_OF_YEAR, 1);
@@ -271,10 +292,14 @@ public class File
 		drive.getDatabase().execute(new Transaction<Void>()
 		{
 			@Override
-			public Void run(Database arg0) throws Throwable
+			public Void run(Database db) throws Throwable
 			{
-				drive.getDatabase().execute("DELETE FROM FILES WHERE ID=?", file.getId());
-				drive.getDatabase().execute("INSERT INTO FILES(ID, TITLE, MIMETYPE, MD5HEX, SIZE, MTIME, DOWNLOADURL, METADATAREFRESHED, CHILDRENREFRESHED) VALUES(?,?,?,?,?,?,?,?,?)", file.getId(), file.getTitle(), file.getMimeType(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl(), asof, childrenAsOfDate != null ? childrenAsOfDate : null);
+				String uuid = UUID.randomUUID().toString();
+				try { uuid = db.getString("SELECT LOCALID FROM FILES WHERE ID=?", file.getId()); }
+				catch(NoSuchElementException e) { /* do nothing, proceed with random uuid; TODO: Parse from description */ }
+				
+				db.execute("DELETE FROM FILES WHERE ID=?", file.getId());
+				db.execute("INSERT INTO FILES(ID, LOCALID, TITLE, MIMETYPE, MD5HEX, SIZE, MTIME, DOWNLOADURL, METADATAREFRESHED, CHILDRENREFRESHED) VALUES(?,?,?,?,?,?,?,?,?,?)", file.getId(), uuid, file.getTitle(), file.getMimeType(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl(), asof, childrenAsOfDate != null ? childrenAsOfDate : null);
 				return null;
 			}
 		});
@@ -376,7 +401,7 @@ public class File
 		com.google.api.services.drive.model.File newRemoteDirectory = new com.google.api.services.drive.model.File();
 		newRemoteDirectory.setTitle(name);
 		newRemoteDirectory.setMimeType(MIME_FOLDER);
-		newRemoteDirectory.setParents(Arrays.asList(new ParentReference().setId(id)));
+		newRemoteDirectory.setParents(Arrays.asList(new ParentReference().setId(googleFileId)));
 		
 		newRemoteDirectory = drive.getRemote().files().insert(newRemoteDirectory).execute();
 		File newDirectory = drive.getFile(newRemoteDirectory.getId());
@@ -517,30 +542,65 @@ public class File
 		
 		return output;
 	}
+	
+	public synchronized UUID getLocalId() throws IOException
+	{
+		if(localFileId == null) readBasicMetadata();
+		return localFileId;
+	}
     
-    public void setTitle(String title) throws IOException
+    public synchronized void setTitle(String title) throws IOException
     {
-        // First retrieve the file from the API.
-    	com.google.api.services.drive.model.File file = drive.getRemote().files().get(id).execute();
+    	if(getTitle().equals(title)) return;
     	
-    	if(file.getTitle().equals(title)) return;
+    	playEverywhere("setTitle", this.getLocalId().toString(), getTitle(), title);
 
-        // File's new metadata.
-        file.setTitle(title);
-
-        // Send the request to the API.
-        drive.getRemote().files().update(id, file).execute();
-        
-        refresh();
-        
-        for(ParentReference ref : file.getParents())
-        	drive.getFile(ref.getId()).clearChildrenCache();
+    	this.title = title;
     }
+    
+    /** Writes the action to the database to be replayed on Google's servers later, plays transaction on local memory **/
+    synchronized void playEverywhere(String... logEntry) throws IOException
+    {
+    	playOnMemory(logEntry);
+    	drive.getDatabase().execute("INSERT INTO UPDATELOG(DETAILS) VALUES(?)", new XStream().toXML(logEntry)); 
+    	drive.pokeLogPlayer();
+    }
+    
+	synchronized void playOnMemory(String... logEntry) throws IOException
+	{
+		if("setTitle".equals(logEntry[0]))
+		{
+			// Sanity checks
+			if(!getLocalId().equals(UUID.fromString(logEntry[1]))) return;
+			if(!getTitle().equals(logEntry[2])) new Throwable("WARNING: Title does not match title from logs (expected: " + logEntry[2] + " was: " + getTitle() + ")").printStackTrace();
+
+			// Perform update
+			title = logEntry[3];
+		}
+	}
+
+	static synchronized void playOnRemote(Drive drive, String... logEntry) throws IOException
+	{
+		if("setTitle".equals(logEntry[0]))
+		{
+			// Perform update
+			String googleFileId = getGoogleId(drive, UUID.fromString(logEntry[1]));
+			com.google.api.services.drive.model.File file = drive.getRemote().files().get(googleFileId).execute();
+			if(!file.getTitle().equals(logEntry[2])) new Throwable("WARNING: Title does not match title from logs (expected: " + logEntry[2] + " was: " + file.getTitle() + ")").printStackTrace();
+			file.setTitle(logEntry[3]);
+			drive.getRemote().files().update(googleFileId, file).execute();
+		}
+	}
+	
+	static String getGoogleId(Drive drive, UUID localId)
+	{
+		return drive.getDatabase().getString("SELECT ID FROM FILES WHERE LOCALID=?", localId.toString());
+	}
 
     public List<File> getParents() throws IOException
     {
     	if(parents == null) parents = new ArrayList<File>();
-    	for(ParentReference parent : drive.getRemote().files().get(id).execute().getParents())
+    	for(ParentReference parent : drive.getRemote().files().get(googleFileId).execute().getParents())
     		parents.add(drive.getFile(parent.getId()));
     	return parents;
 	}
@@ -567,7 +627,7 @@ public class File
 	{
 		if(this.equals(drive.getRoot())) throw new UnsupportedOperationException("Can not trash the root node");
 		List<File> parents = getParents();
-		drive.getRemote().files().trash(id).execute();
+		drive.getRemote().files().trash(googleFileId).execute();
 
 		// Clear the parent's cache of children
 		for(File parent : parents)
@@ -577,7 +637,6 @@ public class File
     @Override
     public String toString()
     {
-    	return "File("+id+")";
+    	return "File("+googleFileId+")";
     }
-    
 }
