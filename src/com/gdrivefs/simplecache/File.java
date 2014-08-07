@@ -12,13 +12,13 @@ import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.GregorianCalendar;
-import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
@@ -30,7 +30,6 @@ import com.google.api.client.http.HttpResponse;
 import com.google.api.client.util.IOUtils;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
-import com.google.common.collect.ImmutableSet;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.DatabaseConnectionException;
 import com.jimsproch.sql.DatabaseRow;
@@ -46,6 +45,8 @@ public class File
 	String googleFileId;
 	UUID localFileId;
 	Drive drive;
+	
+	ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 	
 	// Cache (null indicates field must be fetched from db)
 	Date metadataAsOfDate;
@@ -84,13 +85,13 @@ public class File
 		}
 		readBasicMetadata(rows.get(0));
 		
-		playLogOnMemory("metadata");
+		playLogOnMetadata();
 	}
 	
-	void playLogOnMemory(String category) throws IOException
+	void playLogOnMetadata() throws IOException
 	{
-		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE CATEGORY=? ORDER BY ID ASC", category))
-			playOnMemory(row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
+		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE CATEGORY='metadata' ORDER BY ID ASC"))
+			playOnMetadata(row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 	}
 	
 	static void playLogOnRemote(Drive drive) throws IOException
@@ -405,7 +406,6 @@ public class File
 	private static final String MIME_FOLDER = "application/vnd.google-apps.folder";
 	public File mkdir(String name) throws IOException
 	{
-		System.out.println(name);
 		com.google.api.services.drive.model.File newRemoteDirectory = new com.google.api.services.drive.model.File();
 		newRemoteDirectory.setTitle(name);
 		newRemoteDirectory.setMimeType(MIME_FOLDER);
@@ -551,32 +551,125 @@ public class File
 		return output;
 	}
 	
-	public synchronized UUID getLocalId() throws IOException
+	public UUID getLocalId() throws IOException
 	{
-		if(localFileId == null) readBasicMetadata();
-		return localFileId;
+		lock.readLock().lock();
+		try
+		{
+			if(localFileId == null) readBasicMetadata();
+			return localFileId;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
     
     public synchronized void setTitle(String title) throws IOException
     {
-    	playEverywhere("setTitle", this.getLocalId().toString(), getTitle(), title);
-    	this.title = title;
+    	lock.writeLock().lock();
+    	try
+    	{
+	    	playEverywhere("setTitle", this.getLocalId().toString(), getTitle(), title);
+	    	this.title = title;
+    	}
+    	finally
+    	{
+    		lock.writeLock().unlock();
+    	}
     }
     
     /** Writes the action to the database to be replayed on Google's servers later, plays transaction on local memory **/
     synchronized void playEverywhere(String command, String... logEntry) throws IOException
     {
+    	playOnMetadata(command, logEntry);
+    	playOnDatabase(command, logEntry);
+    }
+    
+    /** Writes the action to the database to be replayed on Google's servers later, plays transaction on local memory **/
+    void playOnDatabase(String command, String... logEntry) throws IOException
+    {
+    	if(!lock.isWriteLockedByCurrentThread()) throw new Error("Must acquire write lock!");
     	String category = null;
     	if("setTitle".equals(command)) category = "metadata";
     	if("addRelationship".equals(command)) category = "relationship";
     	if("removeRelationship".equals(command)) category = "relationship";
     	
-    	playOnMemory(command, logEntry);
     	drive.getDatabase().execute("INSERT INTO UPDATELOG(CATEGORY, COMMAND, DETAILS) VALUES(?,?,?)", category, command, new XStream().toXML(logEntry)); 
     	drive.pokeLogPlayer();
     }
     
-	synchronized void playOnMemory(String command, String... logEntry) throws IOException
+    private void playOnParentsList(List<File> parents, String command, String... logEntry) throws IOException
+    {
+		if(parents == null) return;
+		
+		if("addRelationship".equals(command))
+		{
+			UUID parentLocalId = UUID.fromString(logEntry[0]);
+			UUID childLocalId = UUID.fromString(logEntry[1]);
+
+			if(!getLocalId().equals(childLocalId)) return;
+			
+			parents.add(drive.getFile(parentLocalId));
+		}
+		else if("removeRelationship".equals(command))
+		{
+			UUID childId = UUID.fromString(logEntry[1]);
+			UUID parentId = UUID.fromString(logEntry[0]);
+			
+			if(!getLocalId().equals(childId)) return;
+			
+			File parent = null;
+			for(File f : parents)
+				if(parentId.equals(f.getLocalId()))
+					parent = f;
+
+			parents.remove(parent);
+		}
+		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
+    }
+    
+	private void playLogOnParentsList(List<File> parents) throws IOException
+	{
+		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' ORDER BY ID ASC"))
+			playOnParentsList(parents, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
+	}
+	
+	private void playOnChildrenList(List<File> children, String command, String... logEntry) throws IOException
+	{
+		if(children == null) return;
+		
+		if("addRelationship".equals(command))
+		{
+			UUID parentLocalId = UUID.fromString(logEntry[0]);
+			UUID childLocalId = UUID.fromString(logEntry[1]);
+			
+			if(getLocalId().equals(parentLocalId) && children != null) children.add(drive.getFile(childLocalId));
+		}
+		else if("removeRelationship".equals(command))
+		{
+			UUID childId = UUID.fromString(logEntry[1]);
+			UUID parentId = UUID.fromString(logEntry[0]);
+			
+			if(!getLocalId().equals(parentId)) return;
+			
+			File child = null;
+			for(File f : children)
+				if(childId.equals(f.getLocalId()))
+					child = f;
+
+			children.remove(child);
+		}
+		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
+	}
+    
+	private void playLogOnChildrenList(List<File> children) throws IOException
+	{
+		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' ORDER BY ID ASC"))
+			playOnChildrenList(children, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
+	}
+	
+	synchronized void playOnMetadata(String command, String... logEntry) throws IOException
 	{
 		if("setTitle".equals(command))
 		{
@@ -586,38 +679,6 @@ public class File
 
 			// Perform update
 			title = logEntry[2];
-		}
-		else if("addRelationship".equals(command))
-		{
-			UUID parentLocalId = UUID.fromString(logEntry[0]);
-			UUID childLocalId = UUID.fromString(logEntry[1]);
-			
-			if(getLocalId().equals(parentLocalId) && this.children != null) this.children.add(drive.getFile(childLocalId));
-			if(getLocalId().equals(childLocalId) && this.parents != null) this.parents.add(drive.getFile(parentLocalId));
-		}
-		else if("removeRelationship".equals(command))
-		{
-			UUID childId = UUID.fromString(logEntry[1]);
-			UUID parentId = UUID.fromString(logEntry[0]);
-			
-			File child = getLocalId().equals(childId) ? this : null;
-			File parent = getLocalId().equals(parentId) ? this : null;
-
-			System.out.println("writing local: "+Arrays.toString(logEntry));
-			System.out.println("writing locale: "+child+" "+parent);
-			if(child == null && parent == null) return;
-
-			if(parent != null)
-				for(File f : parent.getChildren())
-					if(childId.equals(f.getLocalId()))
-						child = f;
-			if(child != null)
-				for(File f : child.getParents())
-					if(parentId.equals(f.getLocalId()))
-						parent = f;
-
-			if(parent.children != null) parent.children.remove(child);
-			if(child.parents != null) child.parents.remove(parent);
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
@@ -659,23 +720,42 @@ public class File
 		return drive.getDatabase().getString("SELECT ID FROM FILES WHERE LOCALID=?", localId.toString());
 	}
 
-	public synchronized List<File> getParents() throws IOException
+	public List<File> getParents() throws IOException
 	{
-		parents = new ArrayList<File>();
-		for(ParentReference parent : drive.getRemote().files().get(googleFileId).execute().getParents())
-			parents.add(drive.getFile(parent.getId()));
-		playLogOnMemory("relationship");
-		return parents;
+		lock.readLock().lock();
+		try
+		{
+			List<File> parents = new ArrayList<File>();
+			for(ParentReference parent : drive.getRemote().files().get(googleFileId).execute().getParents())
+				parents.add(drive.getFile(parent.getId()));
+			playLogOnParentsList(parents);
+			this.parents = parents;
+			return parents;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
 
 	public void addChild(File child) throws IOException
 	{
-		if(child.getParents().contains(this)) return;
-		if(parentsContainNode(child)) throw new RuntimeException("Can not add a child to one of the node's parents (direct or indirect)");
-		
-		if(!isDirectory()) throw new UnsupportedOperationException("Can not add child to non-directory");
-
-		playEverywhere("addRelationship", this.getLocalId().toString(), child.getLocalId().toString());
+		lock.writeLock().lock();
+		try
+		{
+			if(child.getParents().contains(this)) return;
+			if(parentsContainNode(child)) throw new RuntimeException("Can not add a child to one of the node's parents (direct or indirect)");
+			
+			if(!isDirectory()) throw new UnsupportedOperationException("Can not add child to non-directory");
+	
+			playOnDatabase("addRelationship", this.getLocalId().toString(), child.getLocalId().toString());
+			playOnChildrenList(children, "addRelationship", this.getLocalId().toString(), child.getLocalId().toString());
+			child.playOnParentsList(child.parents, "addRelationship", this.getLocalId().toString(), child.getLocalId().toString());
+		}
+		finally
+		{
+			lock.writeLock().unlock();
+		}
 	}
 	
 	private boolean parentsContainNode(File node) throws IOException
@@ -693,10 +773,20 @@ public class File
 
 	public void removeChild(File child) throws IOException
 	{
-		if(!this.getChildren().contains(child)) return;
-		if(child.getParents().size() <= 1) throw new UnsupportedOperationException("Child must have at least one parent");
-
-		playEverywhere("removeRelationship", this.getLocalId().toString(), child.getLocalId().toString());
+		lock.writeLock().lock();
+		try
+		{
+			if(!this.getChildren().contains(child)) return;
+			if(child.getParents().size() <= 1) throw new UnsupportedOperationException("Child must have at least one parent");
+	
+			playOnDatabase("removeRelationship", this.getLocalId().toString(), child.getLocalId().toString());
+			playOnChildrenList(children, "removeRelationship", this.getLocalId().toString(), child.getLocalId().toString());
+			child.playOnParentsList(child.parents, "removeRelationship", this.getLocalId().toString(), child.getLocalId().toString());
+		}
+		finally
+		{
+			lock.writeLock().unlock();
+		}
 	}
 
 	public void trash() throws IOException
