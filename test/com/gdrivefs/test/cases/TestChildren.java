@@ -9,7 +9,7 @@ import org.junit.Test;
 import com.gdrivefs.simplecache.File;
 import com.gdrivefs.test.util.DriveBuilder;
 
-public class TestRelationships
+public class TestChildren
 {
 	@Test
 	public void testTrivial() throws IOException, GeneralSecurityException
@@ -74,8 +74,8 @@ public class TestRelationships
 		foo.mkdir("noise");
 		Assert.assertEquals(2, foo.getChildren().size());
 		
-
 		test = DriveBuilder.uncleanTestDir();
+		Assert.assertEquals(2, test.getChildren().get(0).getChildren().size());
 	}
 
 	@Test
@@ -117,5 +117,29 @@ public class TestRelationships
 		
 		Assert.assertEquals(1, test.getChildren().size());
 		Assert.assertEquals(1, foo.getChildren().size());
+	}
+
+	@Test
+	public void testLoop() throws IOException, GeneralSecurityException
+	{
+		File test = DriveBuilder.cleanTestDir();
+	
+		File foo = test.mkdir("foo");
+		File bar = test.mkdir("bar");
+		
+		foo.getChildren();
+		bar.getChildren();
+		
+		foo.addChild(bar);
+		
+		try
+		{
+			bar.addChild(foo);
+			Assert.fail("Adding foo as a child of bar should cause exception (loops are prohibited)");
+		}
+		catch(Exception e)
+		{
+			/* expected, SUCCESS */
+		}
 	}
 }

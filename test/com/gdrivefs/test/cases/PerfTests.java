@@ -32,6 +32,26 @@ public class PerfTests
 	}
 
 	@Test
+	public void testParents() throws IOException, GeneralSecurityException
+	{
+		File test = DriveBuilder.cleanTestDir();
+		File directory = test.mkdir("MyAwesomeDirectory");
+		
+		// Warm the cache
+		directory.getParents();
+		
+		int count = 0;
+		long start = System.currentTimeMillis();
+		while(System.currentTimeMillis()-start < 1000)
+		{
+			Assert.assertEquals(1, directory.getParents().size());
+			count++;
+		}
+		System.out.println(count);
+		Assert.assertTrue(count > 10000);
+	}
+
+	@Test
 	public void testMkdir() throws IOException, GeneralSecurityException
 	{
 		File test = DriveBuilder.cleanTestDir();
