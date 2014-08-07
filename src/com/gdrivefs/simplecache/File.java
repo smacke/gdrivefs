@@ -174,7 +174,7 @@ public class File
 				}
 				catch(IOException e)
 				{
-					throw new RuntimeException();
+					throw new RuntimeException(e);
 				}
 			}
 		});
@@ -440,7 +440,7 @@ public class File
             
         ByteArrayOutputStream out = new ByteArrayOutputStream();
 
-		HttpRequestFactory requestFactory = drive.transport.createRequestFactory(drive.getRemote().getRequestFactory().getInitializer());
+		HttpRequestFactory requestFactory = drive.getTransport().createRequestFactory(drive.getRemote().getRequestFactory().getInitializer());
 
 		HttpRequest request = requestFactory.buildGetRequest(new GenericUrl(getDownloadUrl()));
 		request.getHeaders().setRange("bytes=" + (startPosition) + "-" + (endPosition - 1));

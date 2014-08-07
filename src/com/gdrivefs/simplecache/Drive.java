@@ -19,9 +19,9 @@ import com.jimsproch.sql.MemoryDatabase;
  */
 public class Drive
 {
-	Database db;
-    HttpTransport transport;
-	com.google.api.services.drive.Drive remote;
+	private Database db;
+    private HttpTransport transport;
+	private com.google.api.services.drive.Drive remote;
 	
 	// Drive-wide singularity cache
 	// TODO: Use soft references and clear the map when references are dropped
@@ -63,6 +63,7 @@ public class Drive
 	
 	com.google.api.services.drive.Drive getRemote()
 	{
+		new Throwable("Note: Getting remote").printStackTrace();
 		return remote;
 	}
 	
@@ -113,6 +114,12 @@ public class Drive
 			unsyncedFiles.put(id, file);
 		}
 		return file;
+	}
+	
+	HttpTransport getTransport()
+	{
+		new Throwable("Note: Getting remote").printStackTrace();
+		return transport;
 	}
 	
 	void pokeLogPlayer()
