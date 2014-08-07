@@ -671,9 +671,24 @@ public class File
 	public void addChild(File child) throws IOException
 	{
 		if(child.getParents().contains(this)) return;
+		if(parentsContainNode(child)) throw new RuntimeException("Can not add a child to one of the node's parents (direct or indirect)");
+		
 		if(!isDirectory()) throw new UnsupportedOperationException("Can not add child to non-directory");
 
 		playEverywhere("addRelationship", this.getLocalId().toString(), child.getLocalId().toString());
+	}
+	
+	private boolean parentsContainNode(File node) throws IOException
+	{
+		boolean parentContained = false;
+		for(File parent : this.getParents())
+			if(node.equals(parent)) return true;
+			else if(parent.parentsContainNode(node))
+			{
+				parentContained = true;
+				break;
+			}
+		return parentContained;
 	}
 
 	public void removeChild(File child) throws IOException
