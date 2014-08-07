@@ -47,7 +47,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	public static void main(final String... args) throws FuseException, GeneralSecurityException, IOException, InterruptedException
 	{
 		if (args.length != 1) {
-			System.err.println("Usage: MemoryFS <mountpoint>");
+			System.err.println("Usage: "+GoogleDriveLinuxFs.class.getSimpleName()+" <mountpoint>");
 			System.exit(1);
 		}
 
