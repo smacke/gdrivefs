@@ -46,7 +46,7 @@ public class DriveBuilder
 
 		for(com.google.api.services.drive.model.File f : googleChildren)
 		{
-			remote.files().trash(f.getId()).execute();
+			remote.files().delete(f.getId()).execute();
 		}
 		
 		com.gdrivefs.simplecache.Drive drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
