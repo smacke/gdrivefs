@@ -1,12 +1,15 @@
 package com.gdrivefs.simplecache;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import com.google.api.client.http.HttpTransport;
 import com.jimsproch.sql.Database;
@@ -17,7 +20,7 @@ import com.jimsproch.sql.MemoryDatabase;
  * Cache utilizes a relational database to store metadata and file fragments.
  * Users can get a root file by calling drive.getRoot()
  */
-public class Drive
+public class Drive implements Closeable
 {
 	private Database db;
     private HttpTransport transport;
@@ -28,7 +31,7 @@ public class Drive
 	Map<String, File> googleFiles = new HashMap<String, File>();
 	Map<UUID, File> unsyncedFiles = new HashMap<UUID, File>();
 
-	static final Executor logPlayer = Executors.newSingleThreadExecutor();
+	final ExecutorService logPlayer = Executors.newSingleThreadExecutor();
 	
 	String rootId;
 	
@@ -63,7 +66,7 @@ public class Drive
 	
 	com.google.api.services.drive.Drive getRemote()
 	{
-		new Throwable("Note: Getting remote").printStackTrace();
+	//	new Throwable("Note: Getting remote").printStackTrace();
 		return remote;
 	}
 	
@@ -118,7 +121,7 @@ public class Drive
 	
 	HttpTransport getTransport()
 	{
-		new Throwable("Note: Getting remote").printStackTrace();
+	//	new Throwable("Note: Getting remote").printStackTrace();
 		return transport;
 	}
 	
@@ -140,5 +143,20 @@ public class Drive
 				}
 			}
 		});
+	}
+
+	@Override
+	public void close() throws IOException
+	{
+		logPlayer.shutdownNow();
+		try
+		{
+			logPlayer.awaitTermination(30, TimeUnit.SECONDS);
+		}
+		catch(InterruptedException e)
+		{
+			e.printStackTrace();
+		}
+		db.close();
 	}
 }

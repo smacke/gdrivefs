@@ -471,4 +471,18 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		*/
 	}
 	
+	@Override
+	public void destroy()
+	{
+		super.destroy();
+		try
+		{
+			drive.close();
+		}
+		catch(IOException e)
+		{
+			throw new RuntimeException(e);
+		}
+	}
+	
 }
