@@ -9,6 +9,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 import com.google.api.client.http.HttpTransport;
 import com.jimsproch.sql.Database;
@@ -31,6 +32,7 @@ public class Drive implements Closeable
 	Map<UUID, File> unsyncedFiles = new HashMap<UUID, File>();
 
 	final ExecutorService logPlayer = Executors.newSingleThreadExecutor();
+	final ReentrantLock writeLock = new ReentrantLock();
 	
 	String rootId;
 	

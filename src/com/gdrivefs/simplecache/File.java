@@ -30,6 +30,7 @@ import com.google.api.client.http.HttpResponse;
 import com.google.api.client.util.IOUtils;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
+import com.google.common.collect.ImmutableList;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.DatabaseConnectionException;
 import com.jimsproch.sql.DatabaseRow;
@@ -78,7 +79,7 @@ public class File
 	/** Reads basic metadata from the cache, throwing an exception if the file metadata isn't in our database **/
 	private void readBasicMetadata() throws IOException
 	{
-		if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or lock required");
+		if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
 		List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", googleFileId);
 		if(rows.size() == 0)
 		{
@@ -124,7 +125,7 @@ public class File
 	
 	public void refresh() throws IOException
 	{
-		lock.writeLock().lock();
+		acquireWrite();
 		try
 		{
 			Date asof = new Date();
@@ -163,7 +164,7 @@ public class File
 		}
 		finally
 		{
-			lock.writeLock().unlock();
+			releaseWrite();
 		}
 	}
 	
@@ -184,7 +185,7 @@ public class File
 	 */
 	public void considerSynchronousDirectoryRefresh(long threshold, TimeUnit units) throws IOException
 	{
-		lock.writeLock().lock();
+		acquireWrite();
 		try
 		{
 			if(!isDirectory()) throw new Error("This method must not be called on non-directories; called on "+googleFileId+"; consider calling method on this file's parent");
@@ -195,7 +196,7 @@ public class File
 		}
 		finally
 		{
-			lock.writeLock().unlock();
+			releaseWrite();
 		}
 	}
 	
@@ -237,7 +238,7 @@ public class File
 	
 	public List<File> getChildren() throws IOException
 	{
-		lock.readLock().lock();
+		acquireRead();
 		try
 		{
 			if(children != null)
@@ -246,7 +247,7 @@ public class File
 				for(File child : children)
 					if(child.isDirectory())
 						child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
-				return children;
+				return ImmutableList.copyOf(children);
 			}
 			
 			if(!isDirectory()) return children;
@@ -277,6 +278,7 @@ public class File
 					});
 					playLogOnChildrenList(children);
 					this.children = children;
+					return ImmutableList.copyOf(children);
 				}
 			}
 			catch(SQLException e1)
@@ -291,11 +293,11 @@ public class File
 				if(child.isDirectory())
 					child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
 			
-			return children;
+			return ImmutableList.copyOf(children);
 		}
 		finally
 		{
-			lock.readLock().unlock();
+			releaseRead();
 		}
 	}
 	
@@ -343,9 +345,9 @@ public class File
 						try
 						{
 							File f = drive.getFile(child.getId());
-							f.lock.writeLock().lock();
+							f.acquireWrite();
 							try { f.refresh(child, childrenUpdateDate); }
-							finally { f.lock.writeLock().unlock(); }
+							finally { f.releaseWrite(); }
 						}
 						catch(IOException e)
 						{
@@ -367,10 +369,9 @@ public class File
 		}
 	}
 	
-	private synchronized void refresh(final com.google.api.services.drive.model.File file, final Date asof) throws IOException, SQLException
+	private void refresh(final com.google.api.services.drive.model.File file, final Date asof) throws IOException, SQLException
 	{
-		if(title != null && !lock.isWriteLockedByCurrentThread()) throw new Error("Refreshing data requires a write lock!");
-		if(!googleFileId.equals(file.getId())) throw new Error("Attempting to refresh "+googleFileId+" using remote file "+file.getId());
+		if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
 		
 		GregorianCalendar nextUpdateTimestamp = new GregorianCalendar();
 		nextUpdateTimestamp.add(Calendar.DAY_OF_YEAR, 1);
@@ -395,7 +396,7 @@ public class File
 	
 	public String getTitle() throws IOException
 	{
-		lock.readLock().lock();
+		acquireRead();
 		try
 		{
 			if(title == null) readBasicMetadata();
@@ -408,13 +409,13 @@ public class File
 		}
 		finally
 		{
-			lock.readLock().unlock();
+			releaseRead();
 		}
 	}
 	
 	public String getMimeType() throws IOException
 	{
-		lock.readLock().lock();
+		acquireRead();
 		try
 		{
 			if(mimeType == null) readBasicMetadata();
@@ -422,34 +423,35 @@ public class File
 		}
 		finally
 		{
-			lock.readLock().unlock();
+			releaseRead();
 		}
 	}
 	
 	Boolean isDirectoryNoIO()
 	{
+		Date asof = metadataAsOfDate;
 		String mimeType = this.mimeType;
-		if(mimeType == null) return null;
+		if(asof == null && mimeType == null) return null;
 		return MIME_FOLDER.equals(mimeType);
 	}
 	
 	public boolean isDirectory() throws IOException
 	{
-		lock.readLock().lock();
+		acquireRead();
 		try
 		{
-			if(mimeType == null) readBasicMetadata();
-			return isDirectoryNoIO();
+			if(mimeType == null && metadataAsOfDate == null) readBasicMetadata();
+			return MIME_FOLDER.equals(mimeType);
 		}
 		finally
 		{
-			lock.readLock().unlock();
+			releaseRead();
 		}
 	}
 	
 	public long getSize() throws IOException
 	{
-		lock.readLock().lock();
+		acquireRead();
 		try
 		{
 			if(size == null) readBasicMetadata();
@@ -457,13 +459,13 @@ public class File
 		}
 		finally
 		{
-			lock.readLock().unlock();
+			releaseRead();
 		}
 	}
 	
 	public Date getMetadataDate() throws IOException
 	{
-		lock.readLock().lock();
+		acquireRead();
 		try
 		{
 			if(metadataAsOfDate == null) readBasicMetadata();
@@ -471,13 +473,13 @@ public class File
 		}
 		finally
 		{
-			lock.readLock().unlock();
+			releaseRead();
 		}
 	}
 	
 	public Timestamp getModified() throws IOException
 	{
-		lock.readLock().lock();
+		acquireRead();
 		try
 		{
 			if(modifiedTime == null) readBasicMetadata();
@@ -485,13 +487,13 @@ public class File
 		}
 		finally
 		{
-			lock.readLock().unlock();
+			releaseRead();
 		}
 	}
 	
 	public URL getDownloadUrl() throws IOException
 	{
-		lock.readLock().lock();
+		acquireRead();
 		try
 		{
 			if(downloadUrl == null) readBasicMetadata();
@@ -499,13 +501,13 @@ public class File
 		}
 		finally
 		{
-			lock.readLock().unlock();
+			releaseRead();
 		}
 	}
 	
 	public String getMd5Checksum() throws IOException
 	{
-		lock.readLock().lock();
+		acquireRead();
 		try
 		{
 			if(isDirectory()) return null;
@@ -518,14 +520,14 @@ public class File
 		}
 		finally
 		{
-			lock.readLock().unlock();
+			releaseRead();
 		}
 	}
 	
 	private static final String MIME_FOLDER = "application/vnd.google-apps.folder";
 	public File mkdir(String name) throws IOException
 	{
-		lock.writeLock().lock();
+		acquireWrite();
 		try
 		{
 			com.google.api.services.drive.model.File newRemoteDirectory = new com.google.api.services.drive.model.File();
@@ -542,7 +544,7 @@ public class File
 		}
 		finally
 		{
-			lock.writeLock().unlock();
+			releaseWrite();
 		}
 	}
 		
@@ -551,7 +553,7 @@ public class File
 	
     public byte[] read(final long size, final long offset) throws DatabaseConnectionException, IOException
     {
-		lock.readLock().lock();
+		acquireRead();
 		try
 		{
 			byte[] data = getBytesByAnyMeans(offset, offset + size);
@@ -560,7 +562,7 @@ public class File
 		}
 		finally
 		{
-			lock.readLock().unlock();
+			releaseRead();
 		}
 	}
     
@@ -688,7 +690,7 @@ public class File
 	
 	public UUID getLocalId() throws IOException
 	{
-		lock.readLock().lock();
+		acquireRead();
 		try
 		{
 			if(localFileId == null) readBasicMetadata();
@@ -696,20 +698,20 @@ public class File
 		}
 		finally
 		{
-			lock.readLock().unlock();
+			releaseRead();
 		}
 	}
     
     public void setTitle(String title) throws IOException
     {
-    	lock.writeLock().lock();
+    	acquireWrite();
     	try
     	{
 	    	playEverywhere("setTitle", this.getLocalId().toString(), getTitle(), title);
     	}
     	finally
     	{
-    		lock.writeLock().unlock();
+    		releaseWrite();
     	}
     }
     
@@ -835,6 +837,7 @@ public class File
 		
 			ParentReference newParent = new ParentReference();
 			newParent.setId(parentGoogleFileId);
+			System.out.println("INSERTing "+childGoogleFileId+" into "+newParent+" on remote");
 			drive.getRemote().parents().insert(childGoogleFileId, newParent).execute();
 			System.out.println("INSERTED "+childGoogleFileId+" into "+newParent+" on remote");
 		}
@@ -856,7 +859,7 @@ public class File
 
 	public List<File> getParents() throws IOException
 	{
-		lock.readLock().lock();
+		acquireRead();
 		try
 		{
 			if(parents != null) return parents;
@@ -878,7 +881,7 @@ public class File
 		}
 		finally
 		{
-			lock.readLock().unlock();
+			releaseRead();
 		}
 	}
 	
@@ -895,11 +898,11 @@ public class File
 
 	public void addChild(File child) throws IOException
 	{
-		lock.writeLock().lock();
+		acquireWrite();
 		try
 		{
 			if(child.getParents().contains(this)) return;
-			if(parentsContainNode(child)) throw new RuntimeException("Can not add a child to one of the node's parents (direct or indirect)");
+			if(this.equals(child) || parentsContainNode(child)) throw new RuntimeException("Can not add a child to one of the node's parents (direct or indirect)");
 			
 			if(!isDirectory()) throw new UnsupportedOperationException("Can not add child to non-directory");
 	
@@ -909,12 +912,13 @@ public class File
 		}
 		finally
 		{
-			lock.writeLock().unlock();
+			releaseWrite();
 		}
 	}
 	
 	private boolean parentsContainNode(File node) throws IOException
 	{
+		System.out.println(this.getTitle()+" "+node.getTitle()+" "+Thread.currentThread().getId());
 		boolean parentContained = false;
 		for(File parent : this.getParents())
 			if(node.equals(parent)) return true;
@@ -928,7 +932,7 @@ public class File
 
 	public void removeChild(File child) throws IOException
 	{
-		lock.writeLock().lock();
+		acquireWrite();
 		try
 		{
 			if(!this.getChildren().contains(child)) return;
@@ -940,7 +944,7 @@ public class File
 		}
 		finally
 		{
-			lock.writeLock().unlock();
+			releaseWrite();
 		}
 	}
 
@@ -971,9 +975,31 @@ public class File
 		return false;
 	}
     
-    @Override
-    public String toString()
-    {
-    	return "File("+googleFileId+")";
-    }
+	@Override
+	public String toString()
+	{
+		return "File(" + googleFileId + ")";
+	}
+
+	private void acquireRead()
+	{
+		lock.readLock().lock();
+	}
+	
+	private void acquireWrite()
+	{
+		drive.writeLock.lock();
+		lock.writeLock().lock();
+	}
+	
+	private void releaseRead()
+	{
+		lock.readLock().unlock();
+	}
+	
+	private void releaseWrite()
+	{
+		drive.writeLock.unlock();
+		lock.writeLock().unlock();
+	}
 }
