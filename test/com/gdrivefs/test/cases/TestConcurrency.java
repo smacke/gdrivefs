@@ -20,37 +20,52 @@ import com.gdrivefs.test.util.DriveBuilder;
 public class TestConcurrency
 {
 	@Test
-	public void testChildrenOfEmptyDirectory() throws IOException, GeneralSecurityException, InterruptedException, ExecutionException
+	public void concurrentDirectoryManipulationTest() throws IOException, GeneralSecurityException, InterruptedException, ExecutionException
 	{
-		final File test = DriveBuilder.cleanTestDir();
-		
-		ExecutorService worker = Executors.newFixedThreadPool(10);
-		
-		List<Future<Boolean>> futures = new ArrayList<Future<Boolean>>();
-		for(int i = 0; i < 50; i++)
+		DriveBuilder builder = new DriveBuilder();
+		try
 		{
-			final int id = i;
-			futures.add(worker.submit(new Callable<Boolean>(){
-				@Override
-				public Boolean call() throws Exception
-				{
-					// Make a directory
-					File mydirectory = test.mkdir(Integer.toString(id));
-					List<File> otherDirectories = test.getChildren();
-					File randomDirectory = otherDirectories.get(new Random().nextInt(otherDirectories.size()));
+			final File test = builder.cleanTestDir();
 
-					try { randomDirectory.addChild(mydirectory); }
-					catch(RuntimeException e) { /* Not unexpected if use adds self as parent, etc */ }
-					randomDirectory.setTitle(mydirectory.getTitle()+randomDirectory.getTitle());
-					
-					System.out.println(id);
-					
-					return true;
-				}}));
+			ExecutorService worker = Executors.newFixedThreadPool(10);
+
+			List<Future<Boolean>> futures = new ArrayList<Future<Boolean>>();
+			for(int i = 0; i < 50; i++)
+			{
+				final int id = i;
+				futures.add(worker.submit(new Callable<Boolean>()
+				{
+					@Override
+					public Boolean call() throws Exception
+					{
+						// Make a directory
+						File mydirectory = test.mkdir(Integer.toString(id));
+						List<File> otherDirectories = test.getChildren();
+						File randomDirectory = otherDirectories.get(new Random().nextInt(otherDirectories.size()));
+
+						try
+						{
+							randomDirectory.addChild(mydirectory);
+						}
+						catch(RuntimeException e)
+						{ /* Not unexpected if use adds self as parent, etc */
+						}
+						randomDirectory.setTitle(mydirectory.getTitle() + randomDirectory.getTitle());
+
+						System.out.println(id);
+
+						return true;
+					}
+				}));
+			}
+
+			for(Future<Boolean> future : futures)
+				Assert.assertTrue(future.get());
 		}
-		
-		for(Future<Boolean> future : futures)
-			Assert.assertTrue(future.get());
+		finally
+		{
+			builder.close();
+		}
 	}
 
 }

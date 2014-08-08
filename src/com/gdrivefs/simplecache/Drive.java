@@ -6,12 +6,15 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 
+import com.gdrivefs.simplecache.internal.DriveExecutorService;
 import com.google.api.client.http.HttpTransport;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.MemoryDatabase;
 
@@ -19,6 +22,9 @@ import com.jimsproch.sql.MemoryDatabase;
  * Represents a cached version of the GoogleDrive for a particular user.
  * Cache utilizes a relational database to store metadata and file fragments.
  * Users can get a root file by calling drive.getRoot()
+ * 
+ * This package is designed to be thread-safe, but threads should not be interrupted while in the drive/file code path.
+ * Users should invoke the flush() method to ensure changes are durable on disk, but should note that large file uploads may take a long time to flush!
  */
 public class Drive implements Closeable
 {
@@ -31,7 +37,9 @@ public class Drive implements Closeable
 	Map<String, File> googleFiles = new HashMap<String, File>();
 	Map<UUID, File> unsyncedFiles = new HashMap<UUID, File>();
 
-	final ExecutorService logPlayer = Executors.newSingleThreadExecutor();
+	DriveExecutorService logPlayer = new DriveExecutorService();
+	DriveExecutorService fileUpdateWorker = new DriveExecutorService(new ThreadFactoryBuilder().setDaemon(true).build());
+
 	final ReentrantLock writeLock = new ReentrantLock();
 	
 	String rootId;
@@ -74,6 +82,11 @@ public class Drive implements Closeable
 	Database getDatabase()
 	{
 		return db;
+	}
+	
+	public boolean isShutdown()
+	{
+		return logPlayer.isShutdown();
 	}
 	
 	public synchronized File getRoot() throws IOException
@@ -129,35 +142,68 @@ public class Drive implements Closeable
 	void pokeLogPlayer()
 	{
 		final Drive drive = this;
-		logPlayer.execute(new Runnable()
+		
+		synchronized(logPlayer)
 		{
-			@Override
-			public void run()
-			{
-				try
+			if(!logPlayer.isShutdown())
+				logPlayer.execute(new Runnable()
 				{
-					File.playLogOnRemote(drive);
-				}
-				catch(IOException e)
-				{
-					throw new RuntimeException(e);
-				}
-			}
-		});
+					@Override
+					public void run()
+					{
+						try
+						{
+							synchronized(logPlayer)
+							{
+								if(!logPlayer.isShutdown()) File.playLogEntryOnRemote(drive);
+							}
+						}
+						catch(IOException e)
+						{
+							throw new RuntimeException(e);
+						}
+					}
+				});
+		}
+	}
+	
+	/**
+	 * 
+	 * @param flushUploads - if false, only metadata changes will be flushed.  If true, this method will block even on large file uploads.
+	 * @throws InterruptedException
+	 */
+	public void flush(boolean flushUploads) throws InterruptedException
+	{
+		logPlayer.flush();
 	}
 
 	@Override
 	public void close() throws IOException
 	{
-		logPlayer.shutdownNow();
+		synchronized(logPlayer) { logPlayer.shutdownNow(); }
+		synchronized(fileUpdateWorker) { fileUpdateWorker.shutdownNow(); }
+		
 		try
 		{
-			logPlayer.awaitTermination(30, TimeUnit.SECONDS);
+			// Wait up to a minute for the logPlayer.
+			// If the logPlayer finished in less than six seconds, give the fileUpdateWorker up to those six seconds to finish.
+			long end = System.currentTimeMillis()+30*1000;
+			logPlayer.awaitTermination(60, TimeUnit.SECONDS);
+			fileUpdateWorker.awaitTermination(Math.max(end-System.currentTimeMillis(), 0), TimeUnit.MILLISECONDS);
 		}
 		catch(InterruptedException e)
 		{
 			e.printStackTrace();
 		}
 		db.close();
+		try
+		{
+			Thread.sleep(1000);
+		}
+		catch(InterruptedException e)
+		{
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
 	}
 }

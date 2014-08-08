@@ -1,5 +1,6 @@
 package com.gdrivefs.test.util;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
@@ -7,7 +8,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-import com.gdrivefs.simplecache.Drive;
 import com.gdrivefs.simplecache.File;
 import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
@@ -22,7 +22,7 @@ import com.google.api.services.drive.DriveScopes;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
 
-public class DriveBuilder
+public class DriveBuilder implements Closeable
 {
 	public static final String TESTID = "0B9V4qybqtJE-djhyUDl5R1pKTHM";
 	
@@ -63,8 +63,20 @@ public class DriveBuilder
 		}
 	}
 	
-	public static File cleanTestDir() throws IOException, GeneralSecurityException
+	com.gdrivefs.simplecache.Drive drive = null;
+	
+	public void flush() throws InterruptedException
 	{
+		drive.flush(true);
+	}
+	
+	public File cleanTestDir() throws IOException, GeneralSecurityException
+	{
+		if(drive != null)
+		{
+			drive.close();
+		}
+		
 		HttpTransport httpTransport = GoogleNetHttpTransport.newTrustedTransport();
 
 		FileDataStoreFactory dataStoreFactory = new FileDataStoreFactory(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "auth"));
@@ -89,14 +101,16 @@ public class DriveBuilder
 			remote.files().delete(f.getId()).execute();
 		}
 		
-		com.gdrivefs.simplecache.Drive drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
+		drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
 
 		
 		return drive.getFile(TESTID);
 	}
 
-	public static File uncleanTestDir() throws IOException, GeneralSecurityException
+	public File uncleanTestDir() throws IOException, GeneralSecurityException
 	{
+		if(drive != null) drive.close();
+		
 		HttpTransport httpTransport = GoogleNetHttpTransport.newTrustedTransport();
 
 		FileDataStoreFactory dataStoreFactory = new FileDataStoreFactory(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "auth"));
@@ -106,10 +120,23 @@ public class DriveBuilder
 
 		com.google.api.services.drive.Drive remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
 		
-		com.gdrivefs.simplecache.Drive drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
+		drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
 
 		
 		return drive.getFile(TESTID);
+	}
+	
+	@Override
+	public void finalize() throws Throwable
+	{
+		if(drive != null) drive.close();
+		super.finalize();
+	}
+	
+	@Override
+	public void close() throws IOException
+	{
+		if(drive != null) drive.close();
 	}
 	
 }

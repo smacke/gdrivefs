@@ -15,8 +15,6 @@ import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -62,8 +60,6 @@ public class File
 	List<File> children;
 	List<File> parents;
 	
-	static final Executor worker = Executors.newSingleThreadExecutor();
-	
 	File(Drive drive, String id) throws IOException
 	{
 		this.drive = drive;
@@ -100,13 +96,17 @@ public class File
 			playOnMetadata(row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 	}
 	
-	static void playLogOnRemote(Drive drive) throws IOException
+	static void playLogEntryOnRemote(Drive drive) throws IOException
 	{
-		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG ORDER BY ID ASC"))
-		{
-			playOnRemote(drive, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
-			drive.getDatabase().execute("DELETE FROM UPDATELOG WHERE ID=?", row.getInteger("ID"));
-		}
+		DatabaseRow row = null;
+		try { row = drive.getDatabase().getRow("SELECT * FROM UPDATELOG ORDER BY ID ASC FETCH NEXT ROW ONLY"); }
+		catch(NoSuchElementException e) { /* row doesn't exist; shouldn't happen on modern copies of jimboxutilities (which now just returns null) */ }
+		
+		if(row == null) return;  // We're done processing queue, just return (no need to continue poking the log player either).
+		
+		playOnRemote(drive, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
+		drive.getDatabase().execute("DELETE FROM UPDATELOG WHERE ID=?", row.getInteger("ID"));
+		drive.pokeLogPlayer();
 	}
 	
 	private void readBasicMetadata(DatabaseRow row) throws MalformedURLException
@@ -139,22 +139,28 @@ public class File
 					parentsAsOfDate = null;
 					drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = NULL, PARENTSREFRESHED = NULL WHERE ID=?", googleFileId);
 					final File f = this;
-					worker.execute(new Runnable()
+					synchronized(drive.fileUpdateWorker)
 					{
-						@Override
-						public void run()
-						{
-							try
+						if(!drive.fileUpdateWorker.isShutdown())
+							drive.fileUpdateWorker.execute(new Runnable()
 							{
-								if(f.isDirectory()) f.getChildren();
-								f.getParents();
-							}
-							catch(IOException e)
-							{
-								throw new RuntimeException(e);
-							}
-						}
-					});
+								@Override
+								public void run()
+								{
+									try
+									{
+										if(drive.fileUpdateWorker.isShutdown()) return;
+										if(f.isDirectory()) f.getChildren();
+										if(drive.fileUpdateWorker.isShutdown()) return;
+										f.getParents();
+									}
+									catch(IOException e)
+									{
+										throw new RuntimeException(e);
+									}
+								}
+							});
+					}
 				}
 			}
 			catch(SQLException e)
@@ -210,21 +216,26 @@ public class File
 		if(Boolean.FALSE.equals(isDirectoryNoIO()))
 			throw new Error("This method must not be called on non-directories; called on "+googleFileId+"; consider calling method on this file's parent");
 		
-		worker.execute(new Runnable()
+		synchronized(drive.fileUpdateWorker)
 		{
-			@Override
-			public void run()
+			if(drive.fileUpdateWorker.isShutdown()) return;
+			drive.fileUpdateWorker.execute(new Runnable()
 			{
-				try
+				@Override
+				public void run()
 				{
-					considerSynchronousDirectoryRefresh(threshold, units);
+					try
+					{
+						if(drive.fileUpdateWorker.isShutdown()) return;
+						considerSynchronousDirectoryRefresh(threshold, units);
+					}
+					catch(IOException e)
+					{
+						throw new RuntimeException(e);
+					}
 				}
-				catch(IOException e)
-				{
-					throw new RuntimeException(e);
-				}
-			}
-		});
+			});
+		}
 	}
 	
 	public List<File> getChildren(String title) throws IOException
@@ -338,26 +349,32 @@ public class File
 			
 			// We happen to have metadata for our children available, so we should have the worker update them at earliest convinence
 			for(final com.google.api.services.drive.model.File child : googleChildren)
-				worker.execute(new Runnable(){
-					@Override
-					public void run()
-					{
-						try
-						{
-							File f = drive.getFile(child.getId());
-							f.acquireWrite();
-							try { f.refresh(child, childrenUpdateDate); }
-							finally { f.releaseWrite(); }
-						}
-						catch(IOException e)
-						{
-							throw new RuntimeException(e);
-						}
-						catch(SQLException e)
-						{
-							throw new RuntimeException(e);
-						}
-					}});
+				synchronized(drive.fileUpdateWorker)
+				{
+					if(!drive.fileUpdateWorker.isShutdown())
+						drive.fileUpdateWorker.execute(new Runnable(){
+							@Override
+							public void run()
+							{
+								try
+								{
+									if(drive.fileUpdateWorker.isShutdown()) return;
+									File f = drive.getFile(child.getId());
+									if(drive.fileUpdateWorker.isShutdown()) return;
+									f.acquireWrite();
+									try {f.refresh(child, childrenUpdateDate); }
+									finally { f.releaseWrite(); }
+								}
+								catch(IOException e)
+								{
+									throw new RuntimeException(e);
+								}
+								catch(SQLException e)
+								{
+									throw new RuntimeException(e);
+								}
+							}});
+				}
 			
 			// Sketchy as hell, but I can't think of any way that updating the timestamp could cause a fatal race condition
 			drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = ? WHERE ID = ?", childrenUpdateDate, googleFileId);
@@ -918,7 +935,6 @@ public class File
 	
 	private boolean parentsContainNode(File node) throws IOException
 	{
-		System.out.println(this.getTitle()+" "+node.getTitle()+" "+Thread.currentThread().getId());
 		boolean parentContained = false;
 		for(File parent : this.getParents())
 			if(node.equals(parent)) return true;

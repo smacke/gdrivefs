@@ -14,57 +14,83 @@ public class TestParents
 	@Test
 	public void testSimple() throws IOException, GeneralSecurityException
 	{
-		File test = DriveBuilder.cleanTestDir();
+		DriveBuilder builder = new DriveBuilder();
+		try
+		{
+			File test = builder.cleanTestDir();
 
-		test.mkdir("foo");
-		Assert.assertEquals(1, test.getParents().size());
-		test.refresh();
-		Assert.assertEquals(1, test.getParents().size());
-		
-		test = DriveBuilder.uncleanTestDir();
-		Assert.assertEquals(1, test.getChildren("foo").get(0).getParents().size());
+			test.mkdir("foo");
+			Assert.assertEquals(1, test.getParents().size());
+			test.refresh();
+			Assert.assertEquals(1, test.getParents().size());
+
+			test = builder.uncleanTestDir();
+			Assert.assertEquals(1, test.getChildren("foo").get(0).getParents().size());
+		}
+		finally
+		{
+			builder.close();
+		}
 	}
 
 	@Test
 	public void testMultipleParents() throws IOException, GeneralSecurityException
 	{
-		File test = DriveBuilder.cleanTestDir();
+		DriveBuilder builder = new DriveBuilder();
+		try
+		{
+			File test = builder.cleanTestDir();
 
-		File foo = test.mkdir("foo");
-		File bar = test.mkdir("bar");
-		File noise = test.mkdir("noise");
-		
-		foo.addChild(noise);
-		bar.addChild(noise);
-		test.removeChild(noise);
-		Assert.assertEquals(2, noise.getParents().size());
+			File foo = test.mkdir("foo");
+			File bar = test.mkdir("bar");
+			File noise = test.mkdir("noise");
+
+			foo.addChild(noise);
+			bar.addChild(noise);
+			test.removeChild(noise);
+			Assert.assertEquals(2, noise.getParents().size());
+		}
+		finally
+		{
+			builder.close();
+		}
 	}
 
 	@Test
-	public void testDuplicates() throws IOException, GeneralSecurityException
+	public void testDuplicates() throws IOException, GeneralSecurityException, InterruptedException
 	{
-		File test = DriveBuilder.cleanTestDir();
+		DriveBuilder builder = new DriveBuilder();
+		try
+		{
+			File test = builder.cleanTestDir();
 
-		Assert.assertEquals(0, test.getChildren().size());
-		File foo = test.mkdir("foo");
-		File noise1 = test.mkdir("noise");
-		File noise2 = test.mkdir("noise");
-		File noise3 = test.mkdir("noise");
+			Assert.assertEquals(0, test.getChildren().size());
+			File foo = test.mkdir("foo");
+			File noise1 = test.mkdir("noise");
+			File noise2 = test.mkdir("noise");
+			File noise3 = test.mkdir("noise");
 
-		noise1.addChild(foo);
-		noise2.addChild(foo);
-		noise3.addChild(foo);
-		test.removeChild(foo);
+			noise1.addChild(foo);
+			noise2.addChild(foo);
+			noise3.addChild(foo);
+			test.removeChild(foo);
 
-		noise1.addChild(foo);
-		noise2.addChild(foo);
-		noise3.addChild(foo);
-		
-		Assert.assertEquals(3, foo.getParents().size());
-		test.refresh();
-		Assert.assertEquals(3, foo.getParents().size());
-		
-		test = DriveBuilder.uncleanTestDir();
-		Assert.assertEquals(3, test.getChildren("noise").get(2).getChildren("foo").get(0).getParents().size());
+			noise1.addChild(foo);
+			noise2.addChild(foo);
+			noise3.addChild(foo);
+
+			Assert.assertEquals(3, foo.getParents().size());
+			test.refresh();
+			Assert.assertEquals(3, foo.getParents().size());
+			
+			builder.flush();
+
+			test = builder.uncleanTestDir();
+			Assert.assertEquals(3, test.getChildren("noise").get(2).getChildren("foo").get(0).getParents().size());
+		}
+		finally
+		{
+			builder.close();
+		}
 	}
 }
