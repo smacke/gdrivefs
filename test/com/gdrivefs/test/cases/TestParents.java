@@ -12,7 +12,7 @@ import com.gdrivefs.test.util.DriveBuilder;
 public class TestParents
 {
 	@Test
-	public void testSimple() throws IOException, GeneralSecurityException
+	public void testSimple() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -34,7 +34,7 @@ public class TestParents
 	}
 
 	@Test
-	public void testMultipleParents() throws IOException, GeneralSecurityException
+	public void testMultipleParents() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try

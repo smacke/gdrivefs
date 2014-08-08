@@ -14,9 +14,11 @@ import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInsta
 import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
+import com.google.api.client.googleapis.json.GoogleJsonResponseException;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.client.json.JsonFactory;
 import com.google.api.client.json.jackson2.JacksonFactory;
+import com.google.api.client.util.ExponentialBackOff;
 import com.google.api.client.util.store.FileDataStoreFactory;
 import com.google.api.services.drive.DriveScopes;
 import com.google.api.services.drive.model.FileList;
@@ -70,7 +72,7 @@ public class DriveBuilder implements Closeable
 		drive.flush(true);
 	}
 	
-	public File cleanTestDir() throws IOException, GeneralSecurityException
+	public File cleanTestDir() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		if(drive != null)
 		{
@@ -86,7 +88,41 @@ public class DriveBuilder implements Closeable
 
 		com.google.api.services.drive.Drive remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
 		
+		ExponentialBackOff backoff = new ExponentialBackOff.Builder().build();
+		while(true)
+		{
+			try { cleanTestDirectory(remote); break; }
+			catch(GoogleJsonResponseException t)
+			{
+				if(t.getMessage().startsWith("500 Internal Server Error")) System.err.println("500 Internal Server Error while cleaning test directory");
+				if(t.getMessage().startsWith("404 Not Found")) System.err.println("404 Not Found while cleaning test directory");
+				t.printStackTrace();
+			}
+			catch(Throwable t)
+			{
+				t.printStackTrace();
+			}
+			long backOffMillis = backoff.nextBackOffMillis();
+			if(backOffMillis == ExponentialBackOff.STOP)
+			{
+				throw new Error("Unable to clean directory due to repeated failures");
+			}
+			else
+			{
+				Thread.sleep(backOffMillis);
+			}
+		}
+		
+		drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
+
+		
+		return drive.getFile(TESTID);
+	}
+	
+	public void cleanTestDirectory(com.google.api.services.drive.Drive remote) throws IOException
+	{
 		com.google.api.services.drive.Drive.Files.List lst = remote.files().list().setQ("'"+TESTID+"' in parents and trashed=false");
+
 		final List<com.google.api.services.drive.model.File> googleChildren = new ArrayList<com.google.api.services.drive.model.File>();
 		do
 		{
@@ -100,11 +136,6 @@ public class DriveBuilder implements Closeable
 		{
 			remote.files().delete(f.getId()).execute();
 		}
-		
-		drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
-
-		
-		return drive.getFile(TESTID);
 	}
 
 	public File uncleanTestDir() throws IOException, GeneralSecurityException

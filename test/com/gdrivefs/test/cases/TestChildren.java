@@ -12,7 +12,7 @@ import com.gdrivefs.test.util.DriveBuilder;
 public class TestChildren
 {
 	@Test
-	public void testTrivial() throws IOException, GeneralSecurityException
+	public void testTrivial() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -27,7 +27,7 @@ public class TestChildren
 	}
 
 	@Test
-	public void testCreateChild() throws IOException, GeneralSecurityException
+	public void testCreateChild() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -50,7 +50,7 @@ public class TestChildren
 	}
 
 	@Test
-	public void testGetChildren() throws IOException, GeneralSecurityException
+	public void testGetChildren() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -70,7 +70,7 @@ public class TestChildren
 	}
 
 	@Test
-	public void testDuplicates() throws IOException, GeneralSecurityException
+	public void testDuplicates() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -97,7 +97,7 @@ public class TestChildren
 	}
 
 	@Test
-	public void testNested() throws IOException, GeneralSecurityException
+	public void testNested() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -119,7 +119,7 @@ public class TestChildren
 	}
 
 	@Test
-	public void testAddChild() throws IOException, GeneralSecurityException
+	public void testAddChild() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -147,7 +147,7 @@ public class TestChildren
 	}
 
 	@Test
-	public void testMove() throws IOException, GeneralSecurityException
+	public void testMove() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -176,7 +176,7 @@ public class TestChildren
 	}
 
 	@Test
-	public void testLoop() throws IOException, GeneralSecurityException
+	public void testLoop() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -208,7 +208,7 @@ public class TestChildren
 	}
 
 	@Test
-	public void testCacheReplayConsistency() throws IOException, GeneralSecurityException
+	public void testCacheReplayConsistency() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try

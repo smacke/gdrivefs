@@ -12,7 +12,7 @@ import com.gdrivefs.test.util.DriveBuilder;
 public class PerfTests
 {
 	@Test
-	public void testChildrenOfEmptyDirectory() throws IOException, GeneralSecurityException
+	public void testChildrenOfEmptyDirectory() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -40,7 +40,7 @@ public class PerfTests
 	}
 
 	@Test
-	public void testParents() throws IOException, GeneralSecurityException
+	public void testParents() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -68,7 +68,7 @@ public class PerfTests
 	}
 
 	@Test
-	public void testMkdir() throws IOException, GeneralSecurityException
+	public void testMkdir() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try

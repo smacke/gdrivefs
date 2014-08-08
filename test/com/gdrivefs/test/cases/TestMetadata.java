@@ -12,7 +12,7 @@ import com.gdrivefs.test.util.DriveBuilder;
 public class TestMetadata
 {
 	@Test
-	public void testTitleTrivial() throws IOException, GeneralSecurityException
+	public void testTitleTrivial() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -33,7 +33,7 @@ public class TestMetadata
 	}
 
 	@Test
-	public void testTitleChange() throws IOException, GeneralSecurityException
+	public void testTitleChange() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
@@ -54,7 +54,7 @@ public class TestMetadata
 	}
 
 	@Test
-	public void testTitleSlashes() throws IOException, GeneralSecurityException
+	public void testTitleSlashes() throws IOException, GeneralSecurityException, InterruptedException
 	{
 		DriveBuilder builder = new DriveBuilder();
 		try
