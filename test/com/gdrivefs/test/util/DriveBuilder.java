@@ -138,9 +138,13 @@ public class DriveBuilder implements Closeable
 		}
 	}
 
-	public File uncleanTestDir() throws IOException, GeneralSecurityException
+	public File uncleanTestDir() throws IOException, GeneralSecurityException, InterruptedException
 	{
-		if(drive != null) drive.close();
+		if(drive != null)
+		{
+			drive.flush(true);
+			drive.close();
+		}
 		
 		HttpTransport httpTransport = GoogleNetHttpTransport.newTrustedTransport();
 

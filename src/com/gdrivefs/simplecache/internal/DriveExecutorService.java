@@ -44,9 +44,6 @@ public class DriveExecutorService implements ExecutorService
 	public void execute(Runnable command)
 	{
 		delegate.execute(command);
-		
-		try { this.notifyAll(); }
-		catch(IllegalMonitorStateException e) { throw new Error("Service monitor lock must be held, because you should have been checking the isShutdown() state before adding task!", e); }
 	}
 
 	public <T> List<Future<T>> invokeAll(Collection<? extends Callable<T>> arg0, long arg1, TimeUnit arg2) throws InterruptedException

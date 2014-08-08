@@ -2,6 +2,7 @@ package com.gdrivefs.simplecache;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -119,17 +120,22 @@ public class Drive implements Closeable
 	public synchronized File getFile(UUID id) throws IOException
 	{
 		String googleId = File.getGoogleId(this, id);
-		if(googleId != null)
+		
+		if(googleId == null)
 		{
-			unsyncedFiles.remove(id);
-			return googleFiles.get(googleId);
-		}
-		File file = unsyncedFiles.get(id);
-		if(file == null)
-		{
+			// Get unsynced file or create a new one
+			File file = unsyncedFiles.get(id);
+			if(file != null) return file;
 			file = new File(this, id);
 			unsyncedFiles.put(id, file);
+			return file;
 		}
+		
+		// Get the unsynced file, move it to the google list, return file
+		File file = unsyncedFiles.get(id);
+		if(file == null) return getFile(googleId);
+		googleFiles.put(file.getId(), file);
+		unsyncedFiles.remove(id);
 		return file;
 	}
 	
@@ -143,7 +149,7 @@ public class Drive implements Closeable
 	{
 		final Drive drive = this;
 		
-		synchronized(logPlayer)
+		try
 		{
 			if(!logPlayer.isShutdown())
 				logPlayer.execute(new Runnable()
@@ -162,8 +168,16 @@ public class Drive implements Closeable
 						{
 							throw new RuntimeException(e);
 						}
+						catch(SQLException e)
+						{
+							throw new RuntimeException(e);
+						}
 					}
 				});
+		}
+		catch(Exception e)
+		{
+			System.out.println("note: could not poke player due to: "+e.getMessage());
 		}
 	}
 	
