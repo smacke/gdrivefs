@@ -51,6 +51,7 @@ public class File
 	// Cache (null indicates field must be fetched from db)
 	Date metadataAsOfDate;
 	Date childrenAsOfDate;
+	Date parentsAsOfDate;
 	String title;
 	String fileMd5;
 	URL downloadUrl;
@@ -115,6 +116,7 @@ public class File
 		modifiedTime = row.getTimestamp("MTIME");
 		metadataAsOfDate = row.getTimestamp("METADATAREFRESHED");
 		childrenAsOfDate = row.getTimestamp("CHILDRENREFRESHED");
+		parentsAsOfDate = row.getTimestamp("PARENTSREFRESHED");
 		localFileId = row.getUuid("LOCALID");
 		fileMd5 = row.getString("MD5HEX");
 		downloadUrl = row.getString("DOWNLOADURL") != null ? new URL(row.getString("DOWNLOADURL")) : null;
@@ -228,8 +230,6 @@ public class File
 			
 			try
 			{
-				synchronized(this)
-				{
 					if(childrenAsOfDate != null)
 						children = drive.getDatabase().execute(new Transaction<List<File>>()
 							{
@@ -251,7 +251,6 @@ public class File
 								}
 							}
 						);
-				}
 			}
 			catch(SQLException e1)
 			{
@@ -358,19 +357,6 @@ public class File
 				
 				db.execute("DELETE FROM FILES WHERE ID=?", file.getId());
 				db.execute("INSERT INTO FILES(ID, LOCALID, TITLE, MIMETYPE, MD5HEX, SIZE, MTIME, DOWNLOADURL, METADATAREFRESHED, CHILDRENREFRESHED) VALUES(?,?,?,?,?,?,?,?,?,?)", file.getId(), uuid, file.getTitle(), file.getMimeType(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl(), asof, childrenAsOfDate != null ? childrenAsOfDate : null);
-				return null;
-			}
-		});
-		
-
-		drive.getDatabase().execute(new Transaction<Void>()
-		{
-			@Override
-			public Void run(Database arg0) throws Throwable
-			{
-				drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE CHILD=?", file.getId());
-				for(ParentReference parent : file.getParents())
-					drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", parent.getId(), file.getId());
 				return null;
 			}
 		});
@@ -860,17 +846,38 @@ public class File
 		lock.readLock().lock();
 		try
 		{
-			List<File> parents = new ArrayList<File>();
-			for(ParentReference parent : drive.getRemote().files().get(googleFileId).execute().getParents())
-				parents.add(drive.getFile(parent.getId()));
-			playLogOnParentsList(parents);
-			this.parents = parents;
+			if(parents != null) return parents;
+
+			if(parentsAsOfDate == null && metadataAsOfDate == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
+			if(parentsAsOfDate != null)
+			{
+				// Fetch from database
+				List<File> parents = new ArrayList<File>();
+				List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE CHILD=?", googleFileId);
+				for(String file : files) parents.add(drive.getFile(file));
+				playLogOnParentsList(parents);
+				this.parents = parents;
+				return parents;
+			}
+			
+			updateParentsFromRemote();
 			return parents;
 		}
 		finally
 		{
 			lock.readLock().unlock();
 		}
+	}
+	
+	private void updateParentsFromRemote() throws IOException
+	{
+		if(parents != null && !lock.isWriteLockedByCurrentThread()) throw new Error("Must have write lock");
+		if(parents == null && !lock.isWriteLockedByCurrentThread() && lock.getReadLockCount() == 0) throw new Error("Must have read or write lock");
+		List<File> parents = new ArrayList<File>();
+		for(ParentReference parent : drive.getRemote().files().get(googleFileId).execute().getParents())
+			parents.add(drive.getFile(parent.getId()));
+		playLogOnParentsList(parents);
+		this.parents = parents;
 	}
 
 	public void addChild(File child) throws IOException
