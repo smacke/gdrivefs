@@ -132,6 +132,29 @@ public class File
 			try
 			{
 				refresh(metadata, asof);
+				if(isDirectory())
+				{
+					childrenAsOfDate = null;
+					parentsAsOfDate = null;
+					drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = NULL, PARENTSREFRESHED = NULL WHERE ID=?", googleFileId);
+					final File f = this;
+					worker.execute(new Runnable()
+					{
+						@Override
+						public void run()
+						{
+							try
+							{
+								if(f.isDirectory()) f.getChildren();
+								f.getParents();
+							}
+							catch(IOException e)
+							{
+								throw new RuntimeException(e);
+							}
+						}
+					});
+				}
 			}
 			catch(SQLException e)
 			{
@@ -804,7 +827,7 @@ public class File
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
 
-	static synchronized void playOnRemote(Drive drive, String command, String... logEntry) throws IOException
+	static void playOnRemote(Drive drive, String command, String... logEntry) throws IOException
 	{
 		if("setTitle".equals(command))
 		{
