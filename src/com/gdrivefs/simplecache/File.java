@@ -264,7 +264,7 @@ public class File
 			try
 			{
 				if(childrenAsOfDate == null && metadataAsOfDate == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
-				if(childrenAsOfDate != null)
+				if(googleFileId == null || childrenAsOfDate != null)
 				{
 					List<File> children = drive.getDatabase().execute(new Transaction<List<File>>()
 					{
@@ -831,12 +831,29 @@ public class File
 
 			children.remove(child);
 		}
+		else if ("trash".equals(command))
+		{
+			boolean appliesToMe = false;
+			for(int i = 1; i < logEntry.length; i++)
+				if(this.getLocalId().equals(UUID.fromString(logEntry[i])))
+					appliesToMe = true;
+			if(!appliesToMe) return;
+			
+			UUID trashedFile = UUID.fromString(logEntry[0]);
+			
+			File child = null;
+			for(File f : children)
+				if(trashedFile.equals(f.getLocalId()))
+					child = f;
+
+			children.remove(child);
+		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
     
 	private void playLogOnChildrenList(List<File> children) throws IOException
 	{
-		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' OR COMMAND='mkdir' ORDER BY ID ASC"))
+		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' OR COMMAND='mkdir' OR COMMAND='trash' ORDER BY ID ASC"))
 			playOnChildrenList(children, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 	}
 	
@@ -863,8 +880,8 @@ public class File
 			size = null;
 			modifiedTime = new Timestamp(Long.parseLong(logEntry[3]));
 			metadataAsOfDate = new Timestamp(Long.parseLong(logEntry[3]));
-			childrenAsOfDate = new Timestamp(Long.parseLong(logEntry[3]));
-			parentsAsOfDate = new Timestamp(Long.parseLong(logEntry[3]));
+			childrenAsOfDate = null;
+			parentsAsOfDate = null;
 			localFileId = UUID.fromString(logEntry[1]);
 			fileMd5 = null;
 			downloadUrl = null;	
@@ -921,6 +938,12 @@ public class File
 			// Fetching the file by old ID will cause the new google identifier to be found and the cache updated
 			drive.getFile(newLocalDirectory.getLocalId());
 		}
+		else if("trash".equals(command))
+		{
+			String googleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
+			System.out.println("Trashing: "+googleFileId);
+			drive.getRemote().files().trash(googleFileId).execute();
+		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
 	
@@ -938,7 +961,7 @@ public class File
 			if(parents != null) return parents;
 
 			if(parentsAsOfDate == null && metadataAsOfDate == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
-			if(parentsAsOfDate != null)
+			if(googleFileId == null || parentsAsOfDate != null)
 			{
 				// Fetch from database
 				List<File> parents = new ArrayList<File>();
@@ -1023,12 +1046,26 @@ public class File
 	public void trash() throws IOException
 	{
 		if(this.equals(drive.getRoot())) throw new UnsupportedOperationException("Can not trash the root node");
-		List<File> parents = getParents();
-		drive.getRemote().files().trash(googleFileId).execute();
 
-		// Clear the parent's cache of children
-//TODO		for(File parent : parents)
-//TODO			parent.clearChildrenCache();
+		acquireWrite();
+		try
+		{
+			List<File> parents = getParents();
+			String[] logEntry = new String[parents.size()+1];
+			logEntry[0] = this.getLocalId().toString();
+			for(int i = 0; i < parents.size(); i++) logEntry[i+1] = parents.get(i).getLocalId().toString();
+			playOnDatabase("trash", logEntry);
+			for(File parent : parents)
+			{
+				parent.acquireWrite();
+				try { parent.playOnChildrenList(parent.children, "trash", logEntry); }
+				finally { parent.releaseWrite(); }
+			}
+		}
+		finally
+		{
+			releaseWrite();
+		}
 	}
 	
 	@Override
