@@ -142,4 +142,18 @@ public class TestChildren
 			/* expected, SUCCESS */
 		}
 	}
+
+	@Test
+	public void testCacheReplayConsistency() throws IOException, GeneralSecurityException
+	{
+		File test = DriveBuilder.cleanTestDir();
+		
+		File parent = test.mkdir("parent");
+		for(int i = 0; i < 10; i++) test.mkdir(Integer.toString(i));
+
+		for(int i = 0; i < 10; i++) parent.addChild(test.getChildren(Integer.toString(i)).get(0));
+		parent.refresh();
+		
+		Assert.assertEquals(10, parent.getChildren().size());
+	}
 }

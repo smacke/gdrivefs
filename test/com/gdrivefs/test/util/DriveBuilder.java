@@ -22,7 +22,6 @@ import com.google.api.services.drive.model.FileList;
 
 public class DriveBuilder
 {
-
 	public static File cleanTestDir() throws IOException, GeneralSecurityException
 	{
 		HttpTransport httpTransport = GoogleNetHttpTransport.newTrustedTransport();

@@ -191,7 +191,7 @@ public class File
 	
 			Date updateThreshold = new Date(System.currentTimeMillis()-units.toMillis(threshold));
 			if(getMetadataDate().before(updateThreshold)) refresh();
-			if(getChildrenDate().before(updateThreshold)) updateChildrenFromRemote();
+			if(childrenAsOfDate != null && childrenAsOfDate.before(updateThreshold)) refresh();
 		}
 		finally
 		{
@@ -253,27 +253,31 @@ public class File
 			
 			try
 			{
-					if(childrenAsOfDate != null)
-						children = drive.getDatabase().execute(new Transaction<List<File>>()
+				if(childrenAsOfDate == null && metadataAsOfDate == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
+				if(childrenAsOfDate != null)
+				{
+					List<File> children = drive.getDatabase().execute(new Transaction<List<File>>()
+					{
+						@Override
+						public List<File> run(Database db) throws Throwable
+						{
+							List<File> children = new ArrayList<File>();
+							List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", googleFileId);
+							for(String file : files)
+								children.add(drive.getFile(file));
+							if(!children.isEmpty())
 							{
-								@Override
-								public List<File> run(Database db) throws Throwable
-								{
-									List<File> children = new ArrayList<File>();
-									List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", googleFileId);
-									for(String file : files) children.add(drive.getFile(file));
-									if(!children.isEmpty())
-									{
-										considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
-										for(File child : children)
-											if(child.isDirectory())
-												child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
-										return children;
-									}
-									return null;
-								}
+								considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+								for(File child : children)
+									if(child.isDirectory()) child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+								return children;
 							}
-						);
+							return null;
+						}
+					});
+					playLogOnChildrenList(children);
+					this.children = children;
+				}
 			}
 			catch(SQLException e1)
 			{
@@ -312,7 +316,7 @@ public class File
 				lst.setPageToken(files.getNextPageToken());
 			} while(lst.getPageToken() != null && lst.getPageToken().length() > 0);
 
-			children = drive.getDatabase().execute(new Transaction<List<File>>()
+			List<File> children = drive.getDatabase().execute(new Transaction<List<File>>()
 			{
 				@Override
 				public List<File> run(Database arg0) throws Throwable
@@ -327,6 +331,8 @@ public class File
 					return children;
 				}
 			});
+			playLogOnChildrenList(children);
+			this.children = children;
 			
 			// We happen to have metadata for our children available, so we should have the worker update them at earliest convinence
 			for(final com.google.api.services.drive.model.File child : googleChildren)
@@ -462,21 +468,6 @@ public class File
 		{
 			if(metadataAsOfDate == null) readBasicMetadata();
 			return metadataAsOfDate;
-		}
-		finally
-		{
-			lock.readLock().unlock();
-		}
-	}
-	
-	public Date getChildrenDate() throws IOException
-	{
-		lock.readLock().lock();
-		try
-		{
-			if(metadataAsOfDate == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
-			if(childrenAsOfDate == null) updateChildrenFromRemote();
-			return childrenAsOfDate;
 		}
 		finally
 		{
@@ -709,13 +700,12 @@ public class File
 		}
 	}
     
-    public synchronized void setTitle(String title) throws IOException
+    public void setTitle(String title) throws IOException
     {
     	lock.writeLock().lock();
     	try
     	{
 	    	playEverywhere("setTitle", this.getLocalId().toString(), getTitle(), title);
-	    	this.title = title;
     	}
     	finally
     	{
