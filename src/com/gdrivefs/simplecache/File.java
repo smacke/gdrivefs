@@ -21,6 +21,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 
+import com.google.api.client.http.FileContent;
 import com.google.api.client.http.GenericUrl;
 import com.google.api.client.http.HttpRequest;
 import com.google.api.client.http.HttpRequestFactory;
@@ -109,7 +110,7 @@ public class File
 	
 	void playLogOnMetadata() throws IOException
 	{
-		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='setTitle' OR COMMAND='mkdir' ORDER BY ID ASC"))
+		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='setTitle' OR COMMAND='mkdir' OR COMMAND='createFile' ORDER BY ID ASC"))
 			playOnMetadata(row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 	}
 	
@@ -576,7 +577,6 @@ public class File
 			playOnDatabase("mkdir", this.getLocalId().toString(), newDirectory.getLocalId().toString(), name, Long.toString(creationTime));
 			playOnMetadata("mkdir", this.getLocalId().toString(), newDirectory.getLocalId().toString(), name, Long.toString(creationTime));
 			playOnChildrenList(children, "mkdir", this.getLocalId().toString(), newDirectory.getLocalId().toString(), name, Long.toString(creationTime));
-			playOnParentsList(children, "mkdir", this.getLocalId().toString(), newDirectory.getLocalId().toString(), name, Long.toString(creationTime));
 			
 		    return newDirectory;
 		}
@@ -585,9 +585,29 @@ public class File
 			releaseWrite();
 		}
 	}
+
+	public File createFile(String name) throws IOException
+	{
+		acquireWrite();
+		try
+		{
+			File newFile = drive.getFile(UUID.randomUUID());
+			long creationTime = System.currentTimeMillis();
+			playOnDatabase("createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
+			playOnMetadata("createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
+			playOnChildrenList(children, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
+			playOnParentsList(children, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
+			
+			return newFile;
+		}
+		finally
+		{
+			releaseWrite();
+		}
 		
-	
-	
+
+	}
+
 	
     public byte[] read(final long size, final long offset) throws DatabaseConnectionException, IOException
     {
@@ -795,6 +815,15 @@ public class File
 			
 			parents.add(drive.getFile(parentLocalId));
 		}
+		else if("createFile".equals(command))
+		{
+			UUID parentLocalId = UUID.fromString(logEntry[0]);
+			UUID childLocalId = UUID.fromString(logEntry[1]);
+
+			if(!getLocalId().equals(childLocalId)) return;
+			
+			parents.add(drive.getFile(parentLocalId));
+		}
 		else if("removeRelationship".equals(command))
 		{
 			UUID childId = UUID.fromString(logEntry[1]);
@@ -814,15 +843,22 @@ public class File
     
 	private void playLogOnParentsList(List<File> parents) throws IOException
 	{
-		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' OR COMMAND='mkdir' ORDER BY ID ASC"))
+		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' OR COMMAND='mkdir' OR COMMAND='createFile' ORDER BY ID ASC"))
 			playOnParentsList(parents, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 	}
 	
 	private void playOnChildrenList(List<File> children, String command, String... logEntry) throws IOException
 	{
 		if(children == null) return;
-		
+
 		if("addRelationship".equals(command))
+		{
+			UUID parentLocalId = UUID.fromString(logEntry[0]);
+			UUID childLocalId = UUID.fromString(logEntry[1]);
+			
+			if(getLocalId().equals(parentLocalId) && children != null) children.add(drive.getFile(childLocalId));
+		}
+		else if("createFile".equals(command))
 		{
 			UUID parentLocalId = UUID.fromString(logEntry[0]);
 			UUID childLocalId = UUID.fromString(logEntry[1]);
@@ -872,7 +908,7 @@ public class File
     
 	private void playLogOnChildrenList(List<File> children) throws IOException
 	{
-		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' OR COMMAND='mkdir' OR COMMAND='trash' ORDER BY ID ASC"))
+		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' OR COMMAND='mkdir' OR COMMAND='createFile' OR COMMAND='trash' ORDER BY ID ASC"))
 			playOnChildrenList(children, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 	}
 	
@@ -904,6 +940,24 @@ public class File
 			localFileId = UUID.fromString(logEntry[1]);
 			fileMd5 = null;
 			downloadUrl = null;	
+		}
+		else if("createFile".equals(command))
+		{
+			// Sanity checks
+			if(!getLocalId().equals(UUID.fromString(logEntry[1]))) return;
+
+			// Perform update
+			title = logEntry[2];
+			
+			mimeType = "application/octet-stream";
+			size = 0L;
+			modifiedTime = new Timestamp(Long.parseLong(logEntry[3]));
+			metadataAsOfDate = new Timestamp(Long.parseLong(logEntry[3]));
+			childrenAsOfDate = null;
+			parentsAsOfDate = null;
+			localFileId = UUID.fromString(logEntry[1]);
+			fileMd5 = null;
+			downloadUrl = null;
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
@@ -945,6 +999,26 @@ public class File
 			newRemoteDirectory.setTitle(logEntry[2]);
 			newRemoteDirectory.setMimeType(MIME_FOLDER);
 			newRemoteDirectory.setParents(Arrays.asList(new ParentReference().setId(getGoogleId(drive, UUID.fromString(logEntry[0])))));
+			
+			File newLocalDirectory = drive.getFile(UUID.fromString(logEntry[1]));
+			Date asof = new Date();
+			newRemoteDirectory = drive.getRemote().files().insert(newRemoteDirectory).execute();
+
+			newLocalDirectory.acquireRead();
+			try { newLocalDirectory.refresh(newRemoteDirectory, asof); }
+			finally { newLocalDirectory.releaseRead(); }
+			
+			// Fetching the file by old ID will cause the new google identifier to be found and the cache updated
+			drive.getFile(newLocalDirectory.getLocalId());
+		}
+		else if("createFile".equals(command))
+		{
+			com.google.api.services.drive.model.File newRemoteDirectory = new com.google.api.services.drive.model.File();
+			newRemoteDirectory.setTitle(logEntry[2]);
+			newRemoteDirectory.setMimeType("application/octet-stream");
+			newRemoteDirectory.setParents(Arrays.asList(new ParentReference().setId(getGoogleId(drive, UUID.fromString(logEntry[0])))));
+			
+		//	FileContent mediaContent = new FileContent();
 			
 			File newLocalDirectory = drive.getFile(UUID.fromString(logEntry[1]));
 			Date asof = new Date();

@@ -103,20 +103,26 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	}
 
 	@Override
-	public int create(final String path, final ModeWrapper mode, final FileInfoWrapper info)
+	public int create(String path, final ModeWrapper mode, final FileInfoWrapper info)
 	{
-		throw new Error("unimplemented!");
-		/*
-		if (getPath(path) != null) {
-			return -ErrorCodes.EEXIST();
-		}
-		final MemoryPath parent = getParentPath(path);
-		if (parent instanceof MemoryDirectory) {
-			((MemoryDirectory) parent).mkfile(getLastComponent(path));
+		while(path.endsWith("/")) path = path.substring(0, path.length()-1);
+		
+		try
+		{
+			try { getCachedPath(path); return -ErrorCodes.EEXIST(); }
+			catch(NoSuchElementException e) { /* Do nothing, the directory doesn't yet exist */ }
+			
+			File parent;
+			try { parent = getParentPath(path); }
+			catch(NoSuchElementException e) { return -ErrorCodes.ENOENT(); }
+			
+			parent.createFile(path.substring(path.lastIndexOf('/')+1));
 			return 0;
 		}
-		return -ErrorCodes.ENOENT();
-		*/
+		catch(IOException e)
+		{
+			throw new RuntimeException(e);
+		}
 	}
 
 	@Override
