@@ -806,12 +806,8 @@ public class File
     void playOnDatabase(String command, String... logEntry) throws IOException
     {
     	if(!lock.isWriteLockedByCurrentThread()) throw new Error("Must acquire write lock if you're doing writes!");
-    	String category = null;
-    	if("setTitle".equals(command)) category = "metadata";
-    	if("addRelationship".equals(command)) category = "relationship";
-    	if("removeRelationship".equals(command)) category = "relationship";
     	
-    	drive.getDatabase().execute("INSERT INTO UPDATELOG(CATEGORY, COMMAND, DETAILS) VALUES(?,?,?)", category, command, new XStream().toXML(logEntry)); 
+    	drive.getDatabase().execute("INSERT INTO UPDATELOG(COMMAND, DETAILS) VALUES(?,?)", command, new XStream().toXML(logEntry)); 
     	drive.pokeLogPlayer();
     }
     
