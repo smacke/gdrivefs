@@ -1,10 +1,13 @@
 package com.gdrivefs;
 
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.concurrent.TimeUnit;
 
@@ -19,6 +22,7 @@ import net.fusejna.types.TypeMode.ModeWrapper;
 import net.fusejna.types.TypeMode.NodeType;
 import net.fusejna.util.FuseFilesystemAdapterAssumeImplemented;
 
+import com.gdrivefs.internal.FileWriteCollector;
 import com.gdrivefs.simplecache.Drive;
 import com.gdrivefs.simplecache.File;
 import com.google.api.client.auth.oauth2.Credential;
@@ -357,18 +361,8 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int truncate(final String path, final long offset)
 	{
-		throw new Error("unimplemented!");
-		/*
-		final MemoryPath p = getPath(path);
-		if (p == null) {
-			return -ErrorCodes.ENOENT();
-		}
-		if (!(p instanceof MemoryFile)) {
-			return -ErrorCodes.EISDIR();
-		}
-		((MemoryFile) p).truncate(offset);
+		System.out.println("truncate: "+offset);
 		return 0;
-		*/
 	}
 
 	@Override
@@ -394,23 +388,56 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 			throw new RuntimeException(e);
 		}
 	}
+	
+	public Map<String, FileWriteCollector> openFiles = new HashMap<String, FileWriteCollector>();
 
 	@Override
 	public int write(final String path, final ByteBuffer buf, final long bufSize, final long writeOffset, final FileInfoWrapper wrapper)
 	{
-		throw new Error("unimplemented!");
-		/*
-		final MemoryPath p = getPath(path);
-		if (p == null) {
+		try
+		{
+			FileWriteCollector collector = openFiles.get(path);
+			System.out.println(collector);
+			if(collector == null)
+			{
+				collector = new FileWriteCollector(path.substring(path.lastIndexOf('/')+1));
+				openFiles.put(path, collector);
+			}
+			
+			collector.write(writeOffset, buf, bufSize);
+			
+			return (int)bufSize;
+		}
+		catch(NoSuchElementException e)
+		{
 			return -ErrorCodes.ENOENT();
 		}
-		if (!(p instanceof MemoryFile)) {
-			return -ErrorCodes.EISDIR();
+		catch(IOException e)
+		{
+			e.printStackTrace();
+			return -ErrorCodes.EIO();
 		}
-		return ((MemoryFile) p).write(buf, bufSize, writeOffset);
-		*/
 	}
 	
+	@Override
+	public int flush(String path, FileInfoWrapper info)
+	{
+		FileWriteCollector collector = openFiles.get(path);
+		try
+		{
+			if(collector == null) throw new IOException("No COllector!");
+			getCachedPath(path).update(collector.getFile());
+			System.out.println("closing");
+			openFiles.remove(path);
+			collector.getFile();
+			return 0;
+		}
+		catch(IOException e)
+		{
+			e.printStackTrace();
+			return -ErrorCodes.EIO();
+		}
+	}
 
 
 	@Override
@@ -495,6 +522,8 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		{
 			throw new RuntimeException(e);
 		}
+		synchronized(this) { notifyAll(); }
+		System.out.println(isMounted());
 	}
 	
 }

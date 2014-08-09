@@ -3,7 +3,6 @@ package com.gdrivefs.simplecache;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.net.MalformedURLException;
 import java.net.URL;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -21,12 +20,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 
-import com.google.api.client.http.FileContent;
 import com.google.api.client.http.GenericUrl;
 import com.google.api.client.http.HttpRequest;
 import com.google.api.client.http.HttpRequestFactory;
 import com.google.api.client.http.HttpResponse;
-import com.google.api.client.util.DateTime;
 import com.google.api.client.util.IOUtils;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
@@ -604,10 +601,28 @@ public class File
 		{
 			releaseWrite();
 		}
-		
-
 	}
 
+	public void update(java.io.File file) throws IOException
+	{
+		acquireWrite();
+		try
+		{
+			String name = file.getName();
+		/*	File newFile = drive.getFile(UUID.randomUUID());
+			long creationTime = System.currentTimeMillis();
+			playOnDatabase("createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
+			playOnMetadata("createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
+			playOnChildrenList(children, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
+			playOnParentsList(children, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
+			*/
+			file.renameTo(getUploadFile(this));
+		}
+		finally
+		{
+			releaseWrite();
+		}
+	}
 	
     public byte[] read(final long size, final long offset) throws DatabaseConnectionException, IOException
     {
@@ -700,6 +715,13 @@ public class File
 			cacheFile = new java.io.File(cacheFile, Character.toString((char) c));
 		cacheFile = new java.io.File(cacheFile, chunkMd5);
 		return cacheFile;
+	}
+	
+	static java.io.File getUploadFile(File file) throws IOException
+	{
+		java.io.File uploadFile = new java.io.File(new java.io.File(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "uploads"), file.localFileId.toString()), file.getTitle().replaceAll("/", ""));
+		uploadFile.getParentFile().mkdirs();
+		return uploadFile;
 	}
 	
 	public byte[] getBytesByAnyMeans(long start, long end) throws DatabaseConnectionException, IOException
@@ -1017,10 +1039,12 @@ public class File
 			newRemoteDirectory.setTitle(logEntry[2]);
 			newRemoteDirectory.setMimeType("application/octet-stream");
 			newRemoteDirectory.setParents(Arrays.asList(new ParentReference().setId(getGoogleId(drive, UUID.fromString(logEntry[0])))));
-			
-		//	FileContent mediaContent = new FileContent();
-			
+
 			File newLocalDirectory = drive.getFile(UUID.fromString(logEntry[1]));
+
+	//		String type = Files.probeContentType(Paths.get(getUploadFile(newLocalDirectory).getAbsolutePath()));
+	//		FileContent mediaContent = new FileContent(type, getUploadFile(newLocalDirectory));
+
 			Date asof = new Date();
 			newRemoteDirectory = drive.getRemote().files().insert(newRemoteDirectory).execute();
 
