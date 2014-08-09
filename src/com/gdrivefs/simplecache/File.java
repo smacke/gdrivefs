@@ -342,8 +342,26 @@ public class File
 			playLogOnChildrenList(children);
 			this.children = children;
 			
-			// We happen to have metadata for our children available, so we should have the worker update them at earliest convinence
+			// Ok, dirty trick... we have the data anyway, and we can update without a lock if the child doesn't have a metadata date.  Ewww!
 			for(final com.google.api.services.drive.model.File child : googleChildren)
+			{
+				final File f = drive.getFile(child.getId());
+				
+				f.acquireRead();
+				try
+				{
+					// Since metadata is null, we don't need a write lock, and since we have a read lock, there is no TOCTOU vulnerability.
+					if(f.metadataAsOfDate == null)
+					{
+						f.refresh(child, childrenUpdateDate);
+						continue;
+					}
+				}
+				finally
+				{
+					f.releaseRead();
+				}
+				
 				try
 				{
 					if(!drive.fileUpdateWorker.isShutdown())
@@ -354,7 +372,7 @@ public class File
 								try
 								{
 									if(drive.fileUpdateWorker.isShutdown()) return;
-									File f = drive.getFile(child.getId());
+									
 									if(drive.fileUpdateWorker.isShutdown()) return;
 									f.acquireWrite();
 									try {f.refresh(child, childrenUpdateDate); }
@@ -375,6 +393,7 @@ public class File
 					// worker is probably shutting down; it was just a convinence update anyway
 					System.out.println("skipping adding due to: "+e.getMessage());
 				}
+			}
 			
 			// Sketchy as hell, but I can't think of any way that updating the timestamp could cause a fatal race condition
 			drive.getDatabase().execute("UPDATE FILES SET CHILDRENREFRESHED = ? WHERE ID = ?", childrenUpdateDate, googleFileId);

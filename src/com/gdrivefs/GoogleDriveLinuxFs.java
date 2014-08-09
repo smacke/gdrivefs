@@ -147,6 +147,12 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		}
 		catch(IOException e)
 		{
+			e.printStackTrace();
+			throw new RuntimeException(e);
+		}
+		catch(Throwable e)
+		{
+			e.printStackTrace();
 			throw new RuntimeException(e);
 		}
 	}
