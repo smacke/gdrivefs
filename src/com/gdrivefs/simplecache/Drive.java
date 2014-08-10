@@ -3,6 +3,7 @@ package com.gdrivefs.simplecache;
 import java.io.Closeable;
 import java.io.IOException;
 import java.sql.SQLException;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -12,6 +13,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import com.gdrivefs.simplecache.internal.DriveExecutorService;
 import com.google.api.client.http.HttpTransport;
+import com.google.api.services.drive.model.Property;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.MemoryDatabase;
@@ -87,53 +89,174 @@ public class Drive implements Closeable
 		return logPlayer.isShutdown();
 	}
 	
-	public synchronized File getRoot() throws IOException
+	public File getRoot() throws IOException
 	{
-		if(rootId == null)
+		lock.readLock().lock();
+		try
+		{
+			if(rootId == null)
+				try
+				{
+					rootId = getDatabase().getString("SELECT ROOT FROM DRIVES");
+				}
+				catch(NoSuchElementException e)
+				{
+					rootId = getRemote().about().get().execute().getRootFolderId();
+					getDatabase().execute("INSERT INTO DRIVES(ROOT) VALUES(?)", rootId);
+				}
+			
+			File rootFile = googleFiles.get(rootId);
+			if(rootFile != null) return rootFile;
+			rootFile = new File(this, rootId);
+			googleFiles.put(rootId, rootFile);
+			return rootFile;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
+	}
+	
+	File getFile(final com.google.api.services.drive.model.File remoteFile, final Date asof) throws IOException
+	{
+		lock.readLock().lock();
+		try
+		{
+			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
+			
+			File file = googleFiles.get(remoteFile.getId());
+			if(file == null && remoteFile.getProperties() != null)
+				for(Property property : remoteFile.getProperties())
+				{
+					if("com.gdrivefs.id".equals(property.getKey()))
+					{
+						UUID localFileId = UUID.fromString(property.getValue());
+						if(unsyncedFiles.containsKey(localFileId))
+						{
+							file = unsyncedFiles.remove(localFileId);
+							googleFiles.put(remoteFile.getId(), file);
+						}
+					}
+				}
+			if(file == null && remoteFile.getDescription() != null && remoteFile.getDescription().startsWith("gdrivefsid="))
+			{
+				
+				UUID localFileId = UUID.fromString(remoteFile.getDescription().substring("gdrivefsid=".length()));
+				if(unsyncedFiles.containsKey(localFileId))
+				{
+					file = unsyncedFiles.remove(localFileId);
+					googleFiles.put(remoteFile.getId(), file);
+				}
+			}
+			if(file == null)
+			{
+				file = new File(this, remoteFile.getId());
+				googleFiles.put(remoteFile.getId(), file);
+			}
+			
+			// Now the file is guaranteed to exist, to be in the google cache, and not in the unsynced map.
+			
+			lock.readLock().lock();
 			try
 			{
-				rootId = getDatabase().getString("SELECT ROOT FROM DRIVES");
+				// If we have a write lock and invalid cache, we can refresh, otherwise schedule an async refresh.
+				final File fileReference = file;
+				if(file.metadataAsOfDate == null) file.refresh(remoteFile, asof);
+				else fileUpdateWorker.execute(new Runnable()
+				{
+					@Override
+					public void run()
+					{
+						lock.writeLock().lock();
+						try
+						{
+							fileReference.refresh(remoteFile, asof);
+						}
+						catch(IOException e)
+						{
+							throw new RuntimeException(e);
+						}
+						catch(SQLException e)
+						{
+							throw new RuntimeException(e);
+						}
+						finally
+						{
+							lock.writeLock().unlock();
+						}
+						
+					}
+				});
 			}
-			catch(NoSuchElementException e)
+			catch(SQLException e)
 			{
-				rootId = getRemote().about().get().execute().getRootFolderId();
-				getDatabase().execute("INSERT INTO DRIVES(ROOT) VALUES(?)", rootId);
+				throw new RuntimeException(e);
 			}
-		
-		return getFile(rootId);
-	}
-	
-	public synchronized File getFile(String id) throws IOException
-	{
-		File file = googleFiles.get(id);
-		if(file == null)
-		{
-			file = new File(this, id);
-			googleFiles.put(file.getId(), file);
-		}
-		return file;
-	}
-	
-	public synchronized File getFile(UUID id) throws IOException
-	{
-		String googleId = File.getGoogleId(this, id);
-		
-		if(googleId == null)
-		{
-			// Get unsynced file or create a new one
-			File file = unsyncedFiles.get(id);
-			if(file != null) return file;
-			file = new File(this, id);
-			unsyncedFiles.put(id, file);
+			finally
+			{
+				lock.readLock().unlock();
+			}
+			
 			return file;
 		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 		
-		// Get the unsynced file, move it to the google list, return file
-		File file = unsyncedFiles.get(id);
-		if(file == null) return getFile(googleId);
-		googleFiles.put(file.getId(), file);
-		unsyncedFiles.remove(id);
-		return file;
+	}
+	
+	File getCachedFile(String googleId)
+	{
+		lock.readLock().lock();
+		try
+		{
+			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
+			File file = googleFiles.get(googleId);
+			if(file != null) return file;
+			file = new File(this, googleId);
+			googleFiles.put(googleId, file);
+			return file;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
+	}
+	
+	File getFile(UUID id) throws IOException
+	{
+		lock.readLock().lock();
+		try
+		{
+			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
+			String googleId = File.getGoogleId(this, id);
+			if(googleFiles.containsKey(googleId)) return googleFiles.get(googleId);
+			
+			if(googleId == null)
+			{
+				// Get unsynced file or create a new one
+				File file = unsyncedFiles.get(id);
+				if(file != null) return file;
+				file = new File(this, id);
+				unsyncedFiles.put(id, file);
+				return file;
+			}
+			
+			// Get the unsynced file, move it to the google list, return file
+			File file = unsyncedFiles.get(id);
+			if(file == null)
+			{
+				file = new File(this, googleId);
+			}
+			googleFiles.put(googleId, file);
+			unsyncedFiles.remove(id);
+			return file;
+		}
+		finally
+		{
+			lock.readLock().unlock();
+		}
 	}
 	
 	HttpTransport getTransport()
@@ -191,8 +314,8 @@ public class Drive implements Closeable
 	@Override
 	public void close() throws IOException
 	{
-		synchronized(logPlayer) { logPlayer.shutdownNow(); }
-		synchronized(fileUpdateWorker) { fileUpdateWorker.shutdownNow(); }
+		logPlayer.shutdownNow();
+		fileUpdateWorker.shutdownNow();
 		
 		try
 		{

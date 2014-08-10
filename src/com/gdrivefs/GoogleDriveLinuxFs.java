@@ -1,7 +1,6 @@
 package com.gdrivefs;
 
 import java.io.IOException;
-import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 import java.util.Collections;
@@ -107,11 +106,6 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	public synchronized File getRoot() throws IOException
 	{
 		return drive.getRoot();
-	}
-	
-	public synchronized File getFile(String id) throws IOException
-	{
-		return drive.getFile(id);
 	}
 
 	@Override

@@ -2,10 +2,11 @@ package com.gdrivefs.simplecache.internal;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 
 public class DuplicateRejectingList<E> extends ArrayList<E>
 {
+	private static final long serialVersionUID = 1L;
+
 	public DuplicateRejectingList()
 	{
 	}
@@ -18,7 +19,6 @@ public class DuplicateRejectingList<E> extends ArrayList<E>
 	@Override
 	public boolean add(E element)
 	{
-		System.out.println("adding element to list: "+element);
 		if(contains(element)) throw new Error("Duplicate added: "+element);
 		return super.add(element);
 	}

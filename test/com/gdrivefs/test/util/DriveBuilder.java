@@ -116,7 +116,7 @@ public class DriveBuilder implements Closeable
 		drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
 
 		
-		return drive.getFile(TESTID);
+		return drive.getRoot().getChildren("test").get(0);
 	}
 	
 	public void cleanTestDirectory(com.google.api.services.drive.Drive remote) throws IOException
@@ -157,8 +157,8 @@ public class DriveBuilder implements Closeable
 		
 		drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
 
-		
-		return drive.getFile(TESTID);
+
+		return drive.getRoot().getChildren("test").get(0);
 	}
 	
 	@Override

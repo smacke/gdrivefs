@@ -12,7 +12,6 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
@@ -92,7 +91,7 @@ public class DriveExecutorService implements ExecutorService
 		List<Runnable> runnables = new ArrayList<Runnable>();
 		delegate.getQueue().drainTo(runnables);
 		delegate.shutdown();
-		notifyAll();
+		// TODO: handle the flush command; we want to make it blow up, since it didn't get to flush.
 		return runnables;
 	}
 
@@ -113,26 +112,13 @@ public class DriveExecutorService implements ExecutorService
 	
 	public void flush() throws InterruptedException
 	{
-		final DriveExecutorService executor = this;
-		final AtomicBoolean flushed = new AtomicBoolean(false);
-		delegate.execute(new Runnable()
+		try
 		{
-			@Override
-			public void run()
-			{
-				flushed.set(true);
-				synchronized(executor) { executor.notifyAll(); }
-			}
-		});
-		
-		synchronized(this)
+			delegate.submit(new FlushEntry()).get();
+		}
+		catch(ExecutionException e)
 		{
-			while(true)
-			{
-				if(flushed.get() == true) return;
-				if(executor.isShutdown()) throw new InterruptedException("Drive has been shutdown before all tasks could be flushed");
-				executor.wait();
-			}
+			throw new RuntimeException(e);
 		}
 	}
 
@@ -140,4 +126,15 @@ public class DriveExecutorService implements ExecutorService
 	{
 		return delegate.toString();
 	}
+}
+
+class FlushEntry implements Runnable
+{
+	Boolean success = true;
+	@Override
+	public void run()
+	{
+	}
+	
+	
 }

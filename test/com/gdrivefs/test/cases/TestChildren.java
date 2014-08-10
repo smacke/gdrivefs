@@ -159,6 +159,7 @@ public class TestChildren
 			foo.addChild(bar);
 			test.removeChild(bar);
 			
+			System.out.println(test.getChildren());
 			Assert.assertEquals(1, test.getChildren().size());  // test should contain foo
 			Assert.assertEquals(1, foo.getChildren().size());  // foo should contain bar
 			
