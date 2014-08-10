@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit;
 import net.fusejna.DirectoryFiller;
 import net.fusejna.ErrorCodes;
 import net.fusejna.FuseException;
+import net.fusejna.FuseJna;
 import net.fusejna.StructFuseFileInfo.FileInfoWrapper;
 import net.fusejna.StructStat.StatWrapper;
 import net.fusejna.XattrFiller;
@@ -87,6 +88,19 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		finally
 		{
 			if(filesystem != null) filesystem.destroy();
+		}
+	}
+	
+	@Override
+	public void beforeMount(java.io.File mountPoint)
+	{
+		try
+		{
+			FuseJna.unmount(mountPoint);
+		}
+		catch(IOException e)
+		{
+			e.printStackTrace();
 		}
 	}
 	
@@ -265,7 +279,8 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		}
 		catch(IOException e)
 		{
-			throw new RuntimeException(e);
+			e.printStackTrace();
+			return -ErrorCodes.EIO();
 		}
         
 		return 0;
@@ -309,6 +324,10 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 			
 			if(!newParent.isDirectory()) return -ErrorCodes.ENOTDIR();
 			
+			// Rename is typically atomic on Linux, so systems will use it as a way of doing atomic writes by overriding destination
+			try { getCachedPath(newPath).trash(); }
+			catch(NoSuchElementException e) { /* destination didn't exist, which is fine */ }
+			
 			if(!oldParent.equals(newParent))
 			{
 				newParent.addChild(file);
@@ -328,7 +347,8 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		}
 		catch(IOException e)
 		{
-			throw new RuntimeException(e);
+			e.printStackTrace();
+			return -ErrorCodes.EIO();
 		}
 	}
 
@@ -354,7 +374,8 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		}
 		catch(IOException e)
 		{
-			throw new RuntimeException(e);
+			e.printStackTrace();
+			return -ErrorCodes.EIO();
 		}
 	}
 
@@ -385,19 +406,19 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		}
 		catch(IOException e)
 		{
-			throw new RuntimeException(e);
+			e.printStackTrace();
+			return -ErrorCodes.EIO();
 		}
 	}
 	
 	public Map<String, FileWriteCollector> openFiles = new HashMap<String, FileWriteCollector>();
 
 	@Override
-	public int write(final String path, final ByteBuffer buf, final long bufSize, final long writeOffset, final FileInfoWrapper wrapper)
+	public synchronized int write(final String path, final ByteBuffer buf, final long bufSize, final long writeOffset, final FileInfoWrapper wrapper)
 	{
+		FileWriteCollector collector = openFiles.get(path);
 		try
 		{
-			FileWriteCollector collector = openFiles.get(path);
-			System.out.println(collector);
 			if(collector == null)
 			{
 				collector = new FileWriteCollector(path.substring(path.lastIndexOf('/')+1));
@@ -410,24 +431,30 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		}
 		catch(NoSuchElementException e)
 		{
+			try{collector.getFile();}
+			catch(Throwable t){t.printStackTrace();}
+			openFiles.remove(path);
 			return -ErrorCodes.ENOENT();
 		}
 		catch(IOException e)
 		{
 			e.printStackTrace();
+			try{collector.getFile();}
+			catch(Throwable t){t.printStackTrace();}
+			openFiles.remove(path);
 			return -ErrorCodes.EIO();
 		}
 	}
 	
 	@Override
-	public int flush(String path, FileInfoWrapper info)
+	public synchronized int flush(String path, FileInfoWrapper info)
 	{
 		FileWriteCollector collector = openFiles.get(path);
 		try
 		{
-			if(collector == null) throw new IOException("No COllector!");
+			if(collector == null) return 0;
 			getCachedPath(path).update(collector.getFile());
-			System.out.println("closing");
+			System.err.println("closing");
 			openFiles.remove(path);
 			collector.getFile();
 			return 0;
@@ -437,8 +464,18 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 			e.printStackTrace();
 			return -ErrorCodes.EIO();
 		}
+		catch(RuntimeException e)
+		{
+			e.printStackTrace();
+			return -ErrorCodes.EIO();
+		}
 	}
 
+	@Override
+	public int fsync(String path, int datasync, FileInfoWrapper info)
+	{
+		return flush(path, info);
+	}
 
 	@Override
 	public int getxattr(final String path, final String xattr, final XattrFiller filler, final long size, final long position)
@@ -513,17 +550,45 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public void destroy()
 	{
+		RuntimeException exception = null;
+		
 		super.destroy();
+		
 		try
 		{
 			drive.close();
 		}
 		catch(IOException e)
 		{
-			throw new RuntimeException(e);
+			if(exception == null) exception = new RuntimeException(e);
 		}
+		catch(RuntimeException e)
+		{
+			if(exception == null) exception = new RuntimeException(e);
+		}
+		
+		try
+		{
+			unmount();
+		}
+		catch(IOException e)
+		{
+			if(exception == null) exception = new RuntimeException(e);
+		}
+		catch(FuseException e)
+		{
+			if(exception == null) exception = new RuntimeException(e);
+		}
+		
 		synchronized(this) { notifyAll(); }
+		
 		System.out.println(isMounted());
+		
+		if(exception != null)
+		{
+			exception.printStackTrace();
+			throw new RuntimeException(exception);
+		}
 	}
 	
 }

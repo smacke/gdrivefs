@@ -27,7 +27,7 @@ public class FileWriteCollector
 			delegate = new RandomAccessFile(file, "rw");
 		}
 		
-		if(position != currentPosition) throw new IOException("Only linear writes are supported!");
+		if(position != currentPosition) throw new IOException("Only linear writes are supported! (expected: "+currentPosition+ ", got: "+position+")");
 		delegate.getChannel().write(buf, currentPosition);
 		currentPosition += length;
 	}

@@ -1,9 +1,12 @@
 package com.gdrivefs.simplecache;
 
 import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
@@ -15,11 +18,12 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 
+import com.gdrivefs.simplecache.internal.DuplicateRejectingList;
+import com.google.api.client.http.FileContent;
 import com.google.api.client.http.GenericUrl;
 import com.google.api.client.http.HttpRequest;
 import com.google.api.client.http.HttpRequestFactory;
@@ -44,8 +48,6 @@ public class File
 	UUID localFileId;
 	Drive drive;
 	
-	ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-	
 	// Cache (null indicates field must be fetched from db)
 	Date metadataAsOfDate;
 	Date childrenAsOfDate;
@@ -56,8 +58,8 @@ public class File
 	String mimeType;
 	Long size;
 	Timestamp modifiedTime;
-	List<File> children;
-	List<File> parents;
+	DuplicateRejectingList<File> children;
+	DuplicateRejectingList<File> parents;
 	
 	File(Drive drive, String id) throws IOException
 	{
@@ -78,7 +80,7 @@ public class File
 		
 		if(googleFileId != null)
 		{
-			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
+			if(drive.lock.getReadLockCount() == 0 && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
 			List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", googleFileId);
 			if(rows.size() == 0)
 			{
@@ -129,6 +131,9 @@ public class File
 		acquireWrite();
 		try
 		{
+			if(googleFileId == null) googleFileId = getGoogleId(drive, localFileId);
+			if(googleFileId == null) return;
+			
 			Date asof = new Date();
 			com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(googleFileId).execute();
 			try
@@ -257,19 +262,19 @@ public class File
 				return ImmutableList.copyOf(children);
 			}
 			
-			if(!isDirectory()) return children;
+			if(!isDirectory()) return ImmutableList.copyOf(children);
 			
 			try
 			{
 				if(childrenAsOfDate == null && metadataAsOfDate == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
 				if(googleFileId == null || childrenAsOfDate != null)
 				{
-					List<File> children = drive.getDatabase().execute(new Transaction<List<File>>()
+					DuplicateRejectingList<File> children = drive.getDatabase().execute(new Transaction<DuplicateRejectingList<File>>()
 					{
 						@Override
-						public List<File> run(Database db) throws Throwable
+						public DuplicateRejectingList<File> run(Database db) throws Throwable
 						{
-							List<File> children = new ArrayList<File>();
+							DuplicateRejectingList<File> children = new DuplicateRejectingList<File>();
 							List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", googleFileId);
 							for(String file : files)
 								children.add(drive.getFile(file));
@@ -307,7 +312,7 @@ public class File
 	
 	private void updateChildrenFromRemote()
 	{
-		if(children != null && !lock.isWriteLockedByCurrentThread()) throw new Error("Children cached, so doibng a remote fetch require a write lock!");
+		if(children != null && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Children cached, so doibng a remote fetch require a write lock!");
 
 		try
 		{
@@ -322,12 +327,12 @@ public class File
 				lst.setPageToken(files.getNextPageToken());
 			} while(lst.getPageToken() != null && lst.getPageToken().length() > 0);
 
-			List<File> children = drive.getDatabase().execute(new Transaction<List<File>>()
+			DuplicateRejectingList<File> children = drive.getDatabase().execute(new Transaction<DuplicateRejectingList<File>>()
 			{
 				@Override
-				public List<File> run(Database arg0) throws Throwable
+				public DuplicateRejectingList<File> run(Database arg0) throws Throwable
 				{
-					List<File> children = new ArrayList<File>();
+					DuplicateRejectingList<File> children = new DuplicateRejectingList<File>();
 					drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE PARENT=?", googleFileId);
 					for(com.google.api.services.drive.model.File child : googleChildren)
 					{
@@ -405,7 +410,7 @@ public class File
 	
 	private void refresh(final com.google.api.services.drive.model.File file, final Date asof) throws IOException, SQLException
 	{
-		if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
+		if(drive.lock.getReadLockCount() == 0 && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
 		
 		if(this.googleFileId != null && !this.googleFileId.equals(file.getId())) throw new Error("File ID Miss-match: "+this.googleFileId+" "+file.getId());
 		this.googleFileId = file.getId();
@@ -605,18 +610,20 @@ public class File
 
 	public void update(java.io.File file) throws IOException
 	{
+		System.out.println("should perform update: "+file);
+		FileUtils.copyFile(file, getUploadFile(this));
+		FileInputStream stream = new FileInputStream(getUploadFile(this));
+		String md5;
+		try { md5 = DigestUtils.md5Hex(stream); }
+		finally { stream.close(); }
+		
 		acquireWrite();
 		try
 		{
-			String name = file.getName();
-		/*	File newFile = drive.getFile(UUID.randomUUID());
-			long creationTime = System.currentTimeMillis();
-			playOnDatabase("createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
-			playOnMetadata("createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
-			playOnChildrenList(children, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
-			playOnParentsList(children, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
-			*/
-			file.renameTo(getUploadFile(this));
+			String[] logEntry = new String[]{this.getLocalId().toString(), Long.toString(getUploadFile(this).length()), md5};
+			System.out.println("playing update on db and metadata: "+file);
+			playOnDatabase("update", logEntry);
+			playOnMetadata("update", logEntry);
 		}
 		finally
 		{
@@ -787,7 +794,9 @@ public class File
     	acquireWrite();
     	try
     	{
+    		java.io.File oldCacheLocation = getUploadFile(this);
 	    	playEverywhere("setTitle", this.getLocalId().toString(), getTitle(), title);
+	    	if(oldCacheLocation.exists()) oldCacheLocation.renameTo(getUploadFile(this));
     	}
     	finally
     	{
@@ -805,13 +814,13 @@ public class File
     /** Writes the action to the database to be replayed on Google's servers later, plays transaction on local memory **/
     void playOnDatabase(String command, String... logEntry) throws IOException
     {
-    	if(!lock.isWriteLockedByCurrentThread()) throw new Error("Must acquire write lock if you're doing writes!");
+    	if(!drive.lock.isWriteLockedByCurrentThread()) throw new Error("Must acquire write lock if you're doing writes!");
     	
     	drive.getDatabase().execute("INSERT INTO UPDATELOG(COMMAND, DETAILS) VALUES(?,?)", command, new XStream().toXML(logEntry)); 
     	drive.pokeLogPlayer();
     }
     
-    private void playOnParentsList(List<File> parents, String command, String... logEntry) throws IOException
+    private void playOnParentsList(DuplicateRejectingList<File> parents, String command, String... logEntry) throws IOException
     {
 		if(parents == null) return;
 		
@@ -822,7 +831,8 @@ public class File
 
 			if(!getLocalId().equals(childLocalId)) return;
 			
-			parents.add(drive.getFile(parentLocalId));
+			File parent = drive.getFile(parentLocalId);
+			if(!parents.contains(parent)) parents.add(parent);
 		}
 		else if("mkdir".equals(command))
 		{
@@ -830,8 +840,9 @@ public class File
 			UUID childLocalId = UUID.fromString(logEntry[1]);
 
 			if(!getLocalId().equals(childLocalId)) return;
-			
-			parents.add(drive.getFile(parentLocalId));
+
+			File parent = drive.getFile(parentLocalId);
+			if(!parents.contains(parent)) parents.add(parent);
 		}
 		else if("createFile".equals(command))
 		{
@@ -839,8 +850,9 @@ public class File
 			UUID childLocalId = UUID.fromString(logEntry[1]);
 
 			if(!getLocalId().equals(childLocalId)) return;
-			
-			parents.add(drive.getFile(parentLocalId));
+
+			File parent = drive.getFile(parentLocalId);
+			if(!parents.contains(parent)) parents.add(parent);
 		}
 		else if("removeRelationship".equals(command))
 		{
@@ -859,13 +871,13 @@ public class File
 		else throw new Error("Unknown log entry: "+command+" "+Arrays.toString(logEntry));
     }
     
-	private void playLogOnParentsList(List<File> parents) throws IOException
+	private void playLogOnParentsList(DuplicateRejectingList<File> parents) throws IOException
 	{
 		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' OR COMMAND='mkdir' OR COMMAND='createFile' ORDER BY ID ASC"))
 			playOnParentsList(parents, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 	}
 	
-	private void playOnChildrenList(List<File> children, String command, String... logEntry) throws IOException
+	private void playOnChildrenList(DuplicateRejectingList<File> children, String command, String... logEntry) throws IOException
 	{
 		if(children == null) return;
 
@@ -874,21 +886,24 @@ public class File
 			UUID parentLocalId = UUID.fromString(logEntry[0]);
 			UUID childLocalId = UUID.fromString(logEntry[1]);
 			
-			if(getLocalId().equals(parentLocalId) && children != null) children.add(drive.getFile(childLocalId));
+			File child = drive.getFile(childLocalId);
+			if(getLocalId().equals(parentLocalId) && children != null && !children.contains(child)) children.add(child);
 		}
 		else if("createFile".equals(command))
 		{
 			UUID parentLocalId = UUID.fromString(logEntry[0]);
 			UUID childLocalId = UUID.fromString(logEntry[1]);
-			
-			if(getLocalId().equals(parentLocalId) && children != null) children.add(drive.getFile(childLocalId));
+
+			File child = drive.getFile(childLocalId);
+			if(getLocalId().equals(parentLocalId) && children != null && !children.contains(child)) children.add(child);
 		}
 		else if("mkdir".equals(command))
 		{
 			UUID parentLocalId = UUID.fromString(logEntry[0]);
 			UUID childLocalId = UUID.fromString(logEntry[1]);
-			
-			if(getLocalId().equals(parentLocalId) && children != null) children.add(drive.getFile(childLocalId));
+
+			File child = drive.getFile(childLocalId);
+			if(getLocalId().equals(parentLocalId) && children != null && !children.contains(child)) children.add(child);
 		}
 		else if("removeRelationship".equals(command))
 		{
@@ -924,7 +939,7 @@ public class File
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
     
-	private void playLogOnChildrenList(List<File> children) throws IOException
+	private void playLogOnChildrenList(DuplicateRejectingList<File> children) throws IOException
 	{
 		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' OR COMMAND='mkdir' OR COMMAND='createFile' OR COMMAND='trash' ORDER BY ID ASC"))
 			playOnChildrenList(children, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
@@ -974,20 +989,26 @@ public class File
 			childrenAsOfDate = null;
 			parentsAsOfDate = null;
 			localFileId = UUID.fromString(logEntry[1]);
-			fileMd5 = null;
+			fileMd5 = DigestUtils.md5Hex("");
 			downloadUrl = null;
+		}
+		else if("update".equals(command))
+		{
+			size = Long.parseLong(logEntry[1]);
+			fileMd5 = logEntry[2];
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
 
 	static void playOnRemote(Drive drive, String command, String... logEntry) throws IOException, SQLException
 	{
+		System.err.println("on remote: "+command+" "+Arrays.toString(logEntry));
 		if("setTitle".equals(command))
 		{
 			// Perform update
 			String googleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
 			com.google.api.services.drive.model.File file = drive.getRemote().files().get(googleFileId).execute();
-			if(!file.getTitle().equals(logEntry[1])) new Throwable("WARNING: Title does not match title from logs (expected: " + logEntry[1] + " was: " + file.getTitle() + ")").printStackTrace();
+			if(!file.getTitle().equals(logEntry[1]) && !file.getTitle().equals(logEntry[2])) new Throwable("WARNING: Title does not match title from logs (expected: " + logEntry[1] + " was: " + file.getTitle() + ")").printStackTrace();
 			file.setTitle(logEntry[2]);
 			drive.getRemote().files().update(googleFileId, file).execute();
 		}
@@ -996,8 +1017,8 @@ public class File
 			String parentGoogleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
 			String childGoogleFileId = getGoogleId(drive, UUID.fromString(logEntry[1]));
 
-			if(parentGoogleFileId == null) throw new Error("parentGoogleFileId id should not be null at this point");
-			if(childGoogleFileId == null) throw new Error("childGoogleFileId id should not be null at this point");
+			if(parentGoogleFileId == null) throw new Error("parentGoogleFileId id should not be null at this point for "+parentGoogleFileId);
+			if(childGoogleFileId == null) throw new Error("childGoogleFileId id should not be null at this point for "+childGoogleFileId);
 		
 			ParentReference newParent = new ParentReference();
 			newParent.setId(parentGoogleFileId);
@@ -1025,6 +1046,8 @@ public class File
 			newLocalDirectory.acquireRead();
 			try { newLocalDirectory.refresh(newRemoteDirectory, asof); }
 			finally { newLocalDirectory.releaseRead(); }
+			
+			System.out.println("directory is created "+newLocalDirectory.getLocalId() +" "+ drive.getFile(newLocalDirectory.getLocalId()));
 			
 			// Fetching the file by old ID will cause the new google identifier to be found and the cache updated
 			drive.getFile(newLocalDirectory.getLocalId());
@@ -1057,6 +1080,32 @@ public class File
 			System.out.println("Trashing: "+googleFileId);
 			drive.getRemote().files().trash(googleFileId).execute();
 		}
+		else if("update".equals(command))
+		{
+			File file = drive.getFile(UUID.fromString(logEntry[0]));
+			file.acquireWrite();
+			try
+			{
+				String type = Files.probeContentType(Paths.get(getUploadFile(file).getAbsolutePath()));
+				FileContent mediaContent = new FileContent(type, getUploadFile(file));
+				
+				com.google.api.services.drive.model.File newRemoteDirectory = drive.getRemote().files().get(file.getId()).execute();
+				newRemoteDirectory.setMimeType(type);
+	
+				Date asof = new Date();
+				newRemoteDirectory = drive.getRemote().files().update(file.getId(), newRemoteDirectory, mediaContent).execute();
+	
+				file.refresh(newRemoteDirectory, asof);
+			}
+			catch(SQLException e)
+			{
+				throw new RuntimeException(e);
+			}
+			finally
+			{
+				file.releaseWrite();
+			}
+		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
 	
@@ -1071,22 +1120,22 @@ public class File
 		acquireRead();
 		try
 		{
-			if(parents != null) return parents;
+			if(parents != null) return ImmutableList.copyOf(parents);
 
 			if(parentsAsOfDate == null && metadataAsOfDate == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
 			if(googleFileId == null || parentsAsOfDate != null)
 			{
 				// Fetch from database
-				List<File> parents = new ArrayList<File>();
+				DuplicateRejectingList<File> parents = new DuplicateRejectingList<File>();
 				List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE CHILD=?", googleFileId);
 				for(String file : files) parents.add(drive.getFile(file));
 				playLogOnParentsList(parents);
 				this.parents = parents;
-				return parents;
+				return ImmutableList.copyOf(parents);
 			}
 			
 			updateParentsFromRemote();
-			return parents;
+			return ImmutableList.copyOf(parents);
 		}
 		finally
 		{
@@ -1096,9 +1145,9 @@ public class File
 	
 	private void updateParentsFromRemote() throws IOException
 	{
-		if(parents != null && !lock.isWriteLockedByCurrentThread()) throw new Error("Must have write lock");
-		if(parents == null && !lock.isWriteLockedByCurrentThread() && lock.getReadLockCount() == 0) throw new Error("Must have read or write lock");
-		List<File> parents = new ArrayList<File>();
+		if(parents != null && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Must have write lock");
+		if(parents == null && !drive.lock.isWriteLockedByCurrentThread() && drive.lock.getReadLockCount() == 0) throw new Error("Must have read or write lock");
+		DuplicateRejectingList<File> parents = new DuplicateRejectingList<File>();
 		for(ParentReference parent : drive.getRemote().files().get(googleFileId).execute().getParents())
 			parents.add(drive.getFile(parent.getId()));
 		playLogOnParentsList(parents);
@@ -1185,43 +1234,34 @@ public class File
 	public boolean equals(Object other)
 	{
 		if(!File.class.equals(other.getClass())) return false;
-		if(this.getId() != null && this.getId().equals(((File)other).getId())) return true;
-		try
-		{
-			if(this.getLocalId().equals(((File)other).getLocalId())) return true;
-		}
-		catch(IOException e)
-		{
-			return false;
-		}
+		if(this.googleFileId != null && this.googleFileId.equals(((File)other).googleFileId)) return true;
+		if(this.localFileId != null && this.localFileId.equals(((File)other).localFileId)) return true;
 		return false;
 	}
     
 	@Override
 	public String toString()
 	{
-		return "File(" + googleFileId + ")";
+		return "File(" + googleFileId+", "+localFileId+", "+title + ")";
 	}
 
 	private void acquireRead()
 	{
-		lock.readLock().lock();
+		drive.lock.readLock().lock();
 	}
 	
 	private void acquireWrite()
 	{
-		drive.writeLock.lock();
-		lock.writeLock().lock();
+		drive.lock.writeLock().lock();
 	}
 	
 	private void releaseRead()
 	{
-		lock.readLock().unlock();
+		drive.lock.readLock().unlock();
 	}
 	
 	private void releaseWrite()
 	{
-		drive.writeLock.unlock();
-		lock.writeLock().unlock();
+		drive.lock.writeLock().unlock();
 	}
 }

@@ -7,11 +7,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import com.gdrivefs.simplecache.internal.DriveExecutorService;
 import com.google.api.client.http.HttpTransport;
@@ -41,7 +38,7 @@ public class Drive implements Closeable
 	DriveExecutorService logPlayer = new DriveExecutorService();
 	DriveExecutorService fileUpdateWorker = new DriveExecutorService(new ThreadFactoryBuilder().setDaemon(true).build());
 
-	final ReentrantLock writeLock = new ReentrantLock();
+	final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 	
 	String rootId;
 	
