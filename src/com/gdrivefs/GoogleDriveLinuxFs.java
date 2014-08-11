@@ -453,7 +453,6 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		{
 			if(collector == null) return 0;
 			getCachedPath(path).update(collector.getFile());
-			System.err.println("closing");
 			openFiles.remove(path);
 			collector.getFile();
 			return 0;

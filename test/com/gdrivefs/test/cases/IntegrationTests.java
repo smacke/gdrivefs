@@ -40,6 +40,32 @@ public class IntegrationTests
 			builder.close();
 		}
 	}
+	
+	@Test
+	public void testFileRead() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	{
+		DriveBuilder builder = new DriveBuilder();
+		try
+		{
+			{
+				File test = builder.cleanMountedDirectory();
+				File helloFile = new File(test, "hello.txt");
+				FileUtils.write(helloFile, "hello world");
+			}
+			
+			builder.flush();
+			
+			{
+				File test = builder.uncleanMountedDirectory();
+				File helloFile = new File(test, "hello.txt");
+				Assert.assertEquals("hello world", FileUtils.readFileToString(helloFile));
+			}
+		}
+		finally
+		{
+			builder.close();
+		}
+	}
 
 
 }
