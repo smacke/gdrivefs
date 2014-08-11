@@ -314,6 +314,8 @@ public class Drive implements Closeable
 	@Override
 	public void close() throws IOException
 	{
+		if(db == null) return; // already closed
+		
 		logPlayer.shutdownNow();
 		fileUpdateWorker.shutdownNow();
 		
@@ -329,15 +331,8 @@ public class Drive implements Closeable
 		{
 			e.printStackTrace();
 		}
+		
 		db.close();
-		try
-		{
-			Thread.sleep(1000);
-		}
-		catch(InterruptedException e)
-		{
-			// TODO Auto-generated catch block
-			e.printStackTrace();
-		}
+		db = null;
 	}
 }

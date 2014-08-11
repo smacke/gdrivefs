@@ -177,12 +177,16 @@ public class DriveBuilder implements Closeable
 	@Override
 	public void close() throws IOException
 	{
-		if(drive != null) drive.close();
-		
 		if(filesystem != null)
 		{
 			filesystem.destroy();
 			filesystem = null;
+		}
+
+		if(drive != null)
+		{
+			drive.close();
+			drive = null;
 		}
 		
 		if(mountPoint != null && mountPoint.exists())
