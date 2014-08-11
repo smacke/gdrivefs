@@ -67,5 +67,36 @@ public class IntegrationTests
 		}
 	}
 
+	
+	@Test
+	public void testMkdirs() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	{
+		DriveBuilder builder = new DriveBuilder();
+		try
+		{
+			{
+				File test = builder.cleanMountedDirectory();
+				
+				File nestedDirectories = new File(new File(new File(new File(test,"foo"), "bar"), "noise"), "sweet");
+				
+				Assert.assertTrue(nestedDirectories.mkdirs());
+				Assert.assertEquals("noise", test.listFiles()[0].listFiles()[0].listFiles()[0].getName());
+			}
+			
+			builder.flush();
+			
+			{
+				File test = builder.uncleanMountedDirectory();
+				
+				Assert.assertEquals("noise", test.listFiles()[0].listFiles()[0].listFiles()[0].getName());
+			}
+		}
+		finally
+		{
+			builder.close();
+		}
+	}
+
+	
 
 }
