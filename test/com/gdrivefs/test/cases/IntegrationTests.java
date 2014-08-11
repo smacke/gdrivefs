@@ -66,6 +66,38 @@ public class IntegrationTests
 			builder.close();
 		}
 	}
+	
+	@Test
+	public void testMove() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	{
+		DriveBuilder builder = new DriveBuilder();
+		try
+		{
+			{
+				File test = builder.cleanMountedDirectory();
+				File src = new File(test, "src");
+				File file = new File(src, "hello.txt");
+				src.mkdir();
+				FileUtils.write(file, "hello world");
+			}
+			
+			builder.flush();
+			
+			{
+				File test = builder.uncleanMountedDirectory();
+				File src = new File(new File(test, "src"), "hello.txt");
+				File dst = new File(new File(test, "dst"), "hello.txt");
+				dst.getParentFile().mkdir();
+				src.renameTo(dst);
+				
+				Assert.assertEquals("hello world", FileUtils.readFileToString(dst));
+			}
+		}
+		finally
+		{
+			builder.close();
+		}
+	}
 
 	
 	@Test
