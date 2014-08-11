@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<project default="create_run_jar" name="Create Runnable Jar for Project GoogleFS with Jar-in-Jar Loader">
+    <!--this file was created by Eclipse Runnable JAR Export Wizard-->
+    <!--ANT 1.7 is required                                        -->
+    <target name="create_run_jar">
+        <jar destfile="../gdrivefs.jar">
+            <manifest>
+                <attribute name="Main-Class" value="org.eclipse.jdt.internal.jarinjarloader.JarRsrcLoader"/>
+                <attribute name="Rsrc-Main-Class" value="com.gdrivefs.GoogleDriveLinuxFs"/>
+                <attribute name="Class-Path" value="."/>
+                <attribute name="Rsrc-Class-Path" value="./ commons-logging-1.1.1.jar google-api-client-1.18.0-rc.jar google-api-client-android-1.18.0-rc.jar google-api-client-appengine-1.18.0-rc.jar google-api-client-gson-1.18.0-rc.jar google-api-client-jackson2-1.18.0-rc.jar google-api-client-java6-1.18.0-rc.jar google-api-client-servlet-1.18.0-rc.jar google-http-client-1.18.0-rc.jar google-http-client-android-1.18.0-rc.jar google-http-client-appengine-1.18.0-rc.jar google-http-client-gson-1.18.0-rc.jar google-http-client-jackson2-1.18.0-rc.jar google-http-client-jdo-1.18.0-rc.jar google-oauth-client-1.18.0-rc.jar google-oauth-client-appengine-1.18.0-rc.jar google-oauth-client-java6-1.18.0-rc.jar google-oauth-client-jetty-1.18.0-rc.jar google-oauth-client-servlet-1.18.0-rc.jar gson-2.1.jar httpclient-4.0.1.jar httpcore-4.0.1.jar jackson-core-2.1.3.jar jdo2-api-2.3-eb.jar jetty-6.1.26.jar jetty-util-6.1.26.jar jsr305-1.3.9.jar transaction-api-1.1.jar fuse-jna-uber.jar fuse-jna.jar google-api-services-drive-v2-rev135-1.18.0-rc.jar pax-web-service-0.5.1.jar servlet-api.jar commons-codec-1.7.jar jimboxutilities.jar derbyLocale_cs.jar derbyLocale_de_DE.jar derbyLocale_es.jar derbyLocale_fr.jar derbyLocale_hu.jar derbyLocale_it.jar derbyLocale_ja_JP.jar derbyLocale_ko_KR.jar derbyLocale_pl.jar derbyLocale_pt_BR.jar derbyLocale_ru.jar derbyLocale_zh_CN.jar derbyLocale_zh_TW.jar derby.jar derbyclient.jar derbynet.jar derbytools.jar derbyrun.jar commons-dbcp-1.4.jar commons-pool-1.5.5.jar commons-io-2.4.jar guava-17.0.jar jdom2-2.0.5.jar xmlpull-1.1.3.1.jar xpp3_min-1.1.4c.jar xstream-1.4.7.jar junit.jar org.hamcrest.core_1.3.0.v201303031735.jar"/>
+            </manifest>
+            <zipfileset src="jar-in-jar-loader.zip"/>
+            <fileset dir="../bin"/>
+            <zipfileset dir="../libs" includes="commons-logging-1.1.1.jar"/>
+            <zipfileset dir="../libs" includes="google-api-client-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-api-client-android-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-api-client-appengine-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-api-client-gson-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-api-client-jackson2-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-api-client-java6-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-api-client-servlet-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-http-client-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-http-client-android-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-http-client-appengine-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-http-client-gson-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-http-client-jackson2-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-http-client-jdo-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-oauth-client-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-oauth-client-appengine-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-oauth-client-java6-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-oauth-client-jetty-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="google-oauth-client-servlet-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="gson-2.1.jar"/>
+            <zipfileset dir="../libs" includes="httpclient-4.0.1.jar"/>
+            <zipfileset dir="../libs" includes="httpcore-4.0.1.jar"/>
+            <zipfileset dir="../libs" includes="jackson-core-2.1.3.jar"/>
+            <zipfileset dir="../libs" includes="jdo2-api-2.3-eb.jar"/>
+            <zipfileset dir="../libs" includes="jetty-6.1.26.jar"/>
+            <zipfileset dir="../libs" includes="jetty-util-6.1.26.jar"/>
+            <zipfileset dir="../libs" includes="jsr305-1.3.9.jar"/>
+            <zipfileset dir="../libs" includes="transaction-api-1.1.jar"/>
+            <zipfileset dir="../libs" includes="fuse-jna-uber.jar"/>
+            <zipfileset dir="../libs" includes="fuse-jna.jar"/>
+            <zipfileset dir="../libs" includes="google-api-services-drive-v2-rev135-1.18.0-rc.jar"/>
+            <zipfileset dir="../libs" includes="pax-web-service-0.5.1.jar"/>
+            <zipfileset dir="../libs" includes="servlet-api.jar"/>
+            <zipfileset dir="../libs" includes="commons-codec-1.7.jar"/>
+            <zipfileset dir="../libs" includes="jimboxutilities.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_cs.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_de_DE.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_es.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_fr.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_hu.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_it.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_ja_JP.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_ko_KR.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_pl.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_pt_BR.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_ru.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_zh_CN.jar"/>
+            <zipfileset dir="../libs" includes="derbyLocale_zh_TW.jar"/>
+            <zipfileset dir="../libs" includes="derby.jar"/>
+            <zipfileset dir="../libs" includes="derbyclient.jar"/>
+            <zipfileset dir="../libs" includes="derbynet.jar"/>
+            <zipfileset dir="../libs" includes="derbytools.jar"/>
+            <zipfileset dir="../libs" includes="derbyrun.jar"/>
+            <zipfileset dir="../libs" includes="commons-dbcp-1.4.jar"/>
+            <zipfileset dir="../libs" includes="commons-pool-1.5.5.jar"/>
+            <zipfileset dir="../libs" includes="commons-io-2.4.jar"/>
+            <zipfileset dir="../libs" includes="guava-17.0.jar"/>
+            <zipfileset dir="../libs" includes="jdom2-2.0.5.jar"/>
+            <zipfileset dir="../libs" includes="xmlpull-1.1.3.1.jar"/>
+            <zipfileset dir="../libs" includes="xpp3_min-1.1.4c.jar"/>
+            <zipfileset dir="../libs" includes="xstream-1.4.7.jar"/>
+            <zipfileset dir="/opt/eclipse/plugins/org.junit_4.11.0.v201303080030" includes="junit.jar"/>
+            <zipfileset dir="/opt/eclipse/plugins" includes="org.hamcrest.core_1.3.0.v201303031735.jar"/>
+        </jar>
+    </target>
+</project>

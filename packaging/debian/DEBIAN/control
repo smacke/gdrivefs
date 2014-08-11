@@ -1,0 +1,9 @@
+Package: gdrivefs
+Version: __PACKAGE_VERSION
+Section: web
+Priority: optional
+Architecture: all
+Maintainer: Jim Sproch <jimsproch@gmail.com>
+Description: Google drive INFINITE Storage Client for Linux
+Depends: openjdk-8-jre | openjdk-7-jre | oracle-java8-installer | oracle-java7-installer
+Homepage: http://www.jimsproch.com

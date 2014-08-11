@@ -1,0 +1,8 @@
+#!/bin/sh
+
+if [ $# -lt 1 ]; then
+    echo "Usage: $(basename $0) [mountdir]" >&2
+    exit 1
+fi
+
+java -jar /usr/lib/gdrivefs-__PACKAGE_VERSION.jar $@

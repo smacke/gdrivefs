@@ -1,0 +1,3 @@
+#!/bin/sh
+
+su $SUDO_USER -c "gdrivefs $2" &
