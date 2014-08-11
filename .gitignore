@@ -1,3 +1,4 @@
 /bin/
 /derby.log
-
+gdrivefs-*.deb
+gdrivefs-*.rpm
