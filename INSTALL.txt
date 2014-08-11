@@ -3,30 +3,13 @@ To build a .deb, try running:
 ./package.sh <VERSION>
 
 This installs a jar-with-dependencies in /usr/lib, and
-a helper script in /usr/bin (called gdrivefs). Let me
-know if this actually works for you. I had eclipse
-generate the ant build to package the jar, and I
-don't know how nicely it will play with other setups.
-(Particularly, it needs to be regenerated whenever new
-jars are added, though this should be an easy fix.)
+a helper script in /usr/bin (called gdrivefs).
 
-Mount integration is a little wonky currently. To mount:
+After installation, you can mount a gdrive with the following command:
 
-sudo mount -t gdrive DUMMY_DEVICE <mountdir>
+sudo mount -t gdrive <email_address> <mountdir>
 
-Unfortunately, mount refuses to work unless its given a device.
-I'm trying to find out how best to handle this;
-it's possible that fusermount could help (but I'm not sure
-about this; I think the JNA fuse impl may actually
-delegate to fusermount. Getting things working with mount
-is a huge hack in the first place)
-
-Unmounting is a little nicer, since it is delegated to fuse.
-Just do:
+And you can unmount using this command:
 
 sudo umount <mountdir_from_earlier>
 
-This actually ends up calling the destroy method in
-GoogleDriveLinuxFs, which is nice. Unfortunately,
-something bad happens and it throws an exception,
-and I'm not sure why yet.
