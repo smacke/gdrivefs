@@ -7,6 +7,9 @@ fi
 if [ ! -d "packaging" ]; then
     echo "Please run from the project root directory"
 fi
+
+rm -f gdrivefs-*.deb gdrivefs-*.jar gdrivefs-*.rpm
+
 VERSION=$1
 WORKDIR=$(mktemp -d)
 DEBDIR=$WORKDIR/debian
