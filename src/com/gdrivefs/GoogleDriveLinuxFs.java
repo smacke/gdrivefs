@@ -50,8 +50,8 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	
 	public static void main(final String... args) throws FuseException, GeneralSecurityException, IOException, InterruptedException
 	{
-		if (args.length != 1) {
-			System.err.println("Usage: "+GoogleDriveLinuxFs.class.getSimpleName()+" <mountpoint>");
+		if (args.length != 2) {
+			System.err.println("Usage: "+GoogleDriveLinuxFs.class.getSimpleName()+" <email_address> <mountpoint>");
 			System.exit(1);
 		}
 
@@ -72,7 +72,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 			// Create and mount the filesystem
 			filesystem = new GoogleDriveLinuxFs(drive, httpTransport);
 			filesystem.log(true);
-			filesystem.mount(new java.io.File(args[0]), false);
+			filesystem.mount(new java.io.File(args[1]), false);
 			
 			// Warm the cache by prefetching the drive root, which greatly improves the user experience
 			filesystem.getRoot().getChildren();

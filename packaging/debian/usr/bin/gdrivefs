@@ -1,7 +1,7 @@
 #!/bin/sh
 
-if [ $# -lt 1 ]; then
-    echo "Usage: $(basename $0) [mountdir]" >&2
+if [ $# -lt 2 ]; then
+    echo "Usage: $(basename $0) [email_address] [mountdir]" >&2
     exit 1
 fi
 
