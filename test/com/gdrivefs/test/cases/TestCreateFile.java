@@ -17,7 +17,7 @@ public class TestCreateFile
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 			Assert.assertEquals(0, test.getChildren().size());
 			File noise = test.createFile("hello.txt");
 			Assert.assertEquals(1, test.getChildren().size());
@@ -25,7 +25,7 @@ public class TestCreateFile
 			Assert.assertEquals(0, test.getChildren().size());
 			builder.flush();
 			Assert.assertEquals(0, test.getChildren().size());
-			test = builder.uncleanTestDir();
+			test = builder.uncleanDriveDirectory();
 			test.refresh();
 			Assert.assertEquals(0, test.getChildren().size());
 		}

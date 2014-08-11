@@ -105,7 +105,7 @@ public class File
 			downloadUrl = row.getString("DOWNLOADURL") != null ? new URL(row.getString("DOWNLOADURL")) : null;
 		}
 		
-		playLogOnMetadata();
+		playLogOnMetadata();  //TODO: Log must be played before data is set to memory
 	}
 	
 	void playLogOnMetadata() throws IOException

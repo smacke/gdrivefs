@@ -90,6 +90,11 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		}
 	}
 	
+	public void flush(boolean flushUploads) throws InterruptedException
+	{
+		drive.flush(flushUploads);
+	}
+	
 	@Override
 	public void beforeMount(java.io.File mountPoint)
 	{

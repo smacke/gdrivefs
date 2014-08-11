@@ -17,14 +17,14 @@ public class TestParents
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 
 			test.mkdir("foo");
 			Assert.assertEquals(1, test.getParents().size());
 			test.refresh();
 			Assert.assertEquals(1, test.getParents().size());
 
-			test = builder.uncleanTestDir();
+			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals(1, test.getChildren("foo").get(0).getParents().size());
 		}
 		finally
@@ -39,7 +39,7 @@ public class TestParents
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 
 			File foo = test.mkdir("foo");
 			File bar = test.mkdir("bar");
@@ -62,7 +62,7 @@ public class TestParents
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 
 			Assert.assertEquals(0, test.getChildren().size());
 			File foo = test.mkdir("foo");
@@ -85,7 +85,7 @@ public class TestParents
 			
 			builder.flush();
 
-			test = builder.uncleanTestDir();
+			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals(3, test.getChildren("noise").get(2).getChildren("foo").get(0).getParents().size());
 		}
 		finally

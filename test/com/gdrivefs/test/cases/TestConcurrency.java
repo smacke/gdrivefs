@@ -25,7 +25,7 @@ public class TestConcurrency
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			final File test = builder.cleanTestDir();
+			final File test = builder.cleanDriveDirectory();
 
 			ExecutorService worker = Executors.newFixedThreadPool(10);
 

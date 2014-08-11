@@ -17,12 +17,12 @@ public class TestMetadata
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 			File directory = test.mkdir("MyAwesomeDirectory");
 			Assert.assertEquals(1, test.getChildren().size());
 			Assert.assertEquals("MyAwesomeDirectory", directory.getTitle());
 
-			test = builder.uncleanTestDir();
+			test = builder.uncleanDriveDirectory();
 			directory = test.getChildren("MyAwesomeDirectory").get(0);
 			Assert.assertEquals("MyAwesomeDirectory", directory.getTitle());
 		}
@@ -38,13 +38,13 @@ public class TestMetadata
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 			File directory = test.mkdir("MyAwesomeDirectory");
 			directory.setTitle("Nonsense");
 			Assert.assertEquals("Nonsense", directory.getTitle());
 			Assert.assertEquals("Nonsense", test.getChildren().get(0).getTitle());
 
-			test = builder.uncleanTestDir();
+			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals("Nonsense", test.getChildren().get(0).getTitle());
 		}
 		finally
@@ -59,11 +59,11 @@ public class TestMetadata
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 			test.mkdir("My /-\\wesom@ D1rec|0ry!");
 
 			Assert.assertEquals("My /-\\wesom@ D1rec|0ry!", test.getChildren().get(0).getTitle());
-			test = builder.uncleanTestDir();
+			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals("My /-\\wesom@ D1rec|0ry!", test.getChildren().get(0).getTitle());
 		}
 		finally

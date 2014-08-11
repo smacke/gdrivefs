@@ -17,7 +17,7 @@ public class TestChildren
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 			Assert.assertEquals(0, test.getChildren().size());
 		}
 		finally
@@ -32,7 +32,7 @@ public class TestChildren
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 	
 			Assert.assertEquals(0, test.getChildren().size());
 			test.mkdir("foo");
@@ -40,7 +40,7 @@ public class TestChildren
 			test.refresh();
 			Assert.assertEquals(1, test.getChildren().size());
 			
-			test = builder.uncleanTestDir();
+			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals(1, test.getChildren().size());
 		}
 		finally
@@ -55,7 +55,7 @@ public class TestChildren
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 	
 			Assert.assertEquals(0, test.getChildren().size());
 			test.mkdir("foo");
@@ -75,7 +75,7 @@ public class TestChildren
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 	
 			Assert.assertEquals(0, test.getChildren().size());
 			test.mkdir("foo");
@@ -87,7 +87,7 @@ public class TestChildren
 			test.refresh();
 			Assert.assertEquals(3, test.getChildren("noise").size());
 			
-			test = builder.uncleanTestDir();
+			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals(3, test.getChildren("noise").size());
 		}
 		finally
@@ -102,14 +102,14 @@ public class TestChildren
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 	
 			File foo = test.mkdir("foo");
 			foo.mkdir("bar");
 			foo.mkdir("noise");
 			Assert.assertEquals(2, foo.getChildren().size());
 			
-			test = builder.uncleanTestDir();
+			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals(2, test.getChildren().get(0).getChildren().size());
 		}
 		finally
@@ -124,7 +124,7 @@ public class TestChildren
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 	
 			File foo = test.mkdir("foo");
 			File bar = test.mkdir("bar");
@@ -152,7 +152,7 @@ public class TestChildren
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 	
 			File foo = test.mkdir("foo");
 			File bar = test.mkdir("bar");
@@ -182,7 +182,7 @@ public class TestChildren
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 		
 			File foo = test.mkdir("foo");
 			File bar = test.mkdir("bar");
@@ -214,7 +214,7 @@ public class TestChildren
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 			
 			File parent = test.mkdir("parent");
 			for(int i = 0; i < 10; i++) test.mkdir(Integer.toString(i));

@@ -17,7 +17,7 @@ public class PerfTests
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 			File directory = test.mkdir("MyAwesomeDirectory");
 			
 			// Warm the cache
@@ -45,7 +45,7 @@ public class PerfTests
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 			File directory = test.mkdir("MyAwesomeDirectory");
 			
 			// Warm the cache
@@ -73,7 +73,7 @@ public class PerfTests
 		DriveBuilder builder = new DriveBuilder();
 		try
 		{
-			File test = builder.cleanTestDir();
+			File test = builder.cleanDriveDirectory();
 			File directory = test.mkdir("MyAwesomeDirectory");
 			
 			// Warm the cache

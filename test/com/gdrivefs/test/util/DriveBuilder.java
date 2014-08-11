@@ -4,10 +4,14 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
+import net.fusejna.FuseException;
+import net.fusejna.FuseJna;
+
+import com.gdrivefs.GoogleDriveLinuxFs;
 import com.gdrivefs.simplecache.File;
 import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
@@ -22,76 +26,80 @@ import com.google.api.client.util.ExponentialBackOff;
 import com.google.api.client.util.store.FileDataStoreFactory;
 import com.google.api.services.drive.DriveScopes;
 import com.google.api.services.drive.model.FileList;
-import com.google.api.services.drive.model.ParentReference;
+import com.google.common.io.Files;
 
 public class DriveBuilder implements Closeable
 {
-	public static final String TESTID = "0B9V4qybqtJE-djhyUDl5R1pKTHM";
+	// Google Connection
+	com.google.api.services.drive.Drive remote;
+	HttpTransport httpTransport;
+	com.gdrivefs.simplecache.Drive drive;
+	java.io.File mountPoint;
+	GoogleDriveLinuxFs filesystem;
+	String testid;
 	
-	public static void main(String[] args) throws GeneralSecurityException, IOException
+	public DriveBuilder() throws GeneralSecurityException, IOException
 	{
-		HttpTransport httpTransport = GoogleNetHttpTransport.newTrustedTransport();
-
+		// Setup google connection
+		httpTransport = GoogleNetHttpTransport.newTrustedTransport();
 		FileDataStoreFactory dataStoreFactory = new FileDataStoreFactory(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "auth"));
 		JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
 		GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(httpTransport, JSON_FACTORY, "930897891601-4mbqrmuu5osvk7j3vlkv8k59liot620f.apps.googleusercontent.com", "v18DcOoqIvmVgPVtisCijpTV", Collections.singleton(DriveScopes.DRIVE)).setDataStoreFactory(dataStoreFactory).build();
 		Credential credential = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
-
-		com.google.api.services.drive.Drive remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
-		
-		boolean discovered = false;
-		com.google.api.services.drive.Drive.Files.List lst = remote.files().list().setQ("'"+remote.about().get().execute().getRootFolderId()+"' in parents and trashed=false");
-		do
-		{
-			FileList files = lst.execute();
-			for(com.google.api.services.drive.model.File child : files.getItems())
-				if(child.getTitle().equals("test"))
-				{
-					discovered = true;
-					System.out.println("test id: "+child.getId());
-				}
-			lst.setPageToken(files.getNextPageToken());
-		} while(lst.getPageToken() != null && lst.getPageToken().length() > 0);
-		
-		if(!discovered)
-		{
-			com.google.api.services.drive.model.File newRemoteDirectory = new com.google.api.services.drive.model.File();
-			newRemoteDirectory.setTitle("test");
-			newRemoteDirectory.setMimeType("application/vnd.google-apps.folder");
-			newRemoteDirectory.setParents(Arrays.asList(new ParentReference().setId(remote.about().get().execute().getRootFolderId())));
-			
-			newRemoteDirectory = remote.files().insert(newRemoteDirectory).execute();
-			System.out.println("new test id: "+newRemoteDirectory.getId());
-		}
+		remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
 	}
-	
-	com.gdrivefs.simplecache.Drive drive = null;
-	
+
 	public void flush() throws InterruptedException
 	{
-		drive.flush(true);
+		if(filesystem != null) filesystem.flush(true);
+		else drive.flush(true);
 	}
 	
-	public File cleanTestDir() throws IOException, GeneralSecurityException, InterruptedException
+	private com.google.api.services.drive.model.File getTestDirectory() throws IOException
 	{
-		if(drive != null)
-		{
-			drive.close();
-		}
-		
-		HttpTransport httpTransport = GoogleNetHttpTransport.newTrustedTransport();
+		com.google.api.services.drive.Drive.Files.List lst = remote.files().list().setQ("'"+remote.about().get().execute().getRootFolderId()+"' in parents and title='test'");
 
-		FileDataStoreFactory dataStoreFactory = new FileDataStoreFactory(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "auth"));
-		JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
-		GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(httpTransport, JSON_FACTORY, "930897891601-4mbqrmuu5osvk7j3vlkv8k59liot620f.apps.googleusercontent.com", "v18DcOoqIvmVgPVtisCijpTV", Collections.singleton(DriveScopes.DRIVE)).setDataStoreFactory(dataStoreFactory).build();
-		Credential credential = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
-
-		com.google.api.services.drive.Drive remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
+		FileList files = lst.execute();
+		List<com.google.api.services.drive.model.File> testdirs = files.getItems();
+		if(testdirs.size() != 1) throw new Error("Unexpected number of test directories!");
+		if(lst.getPageToken() != null && lst.getPageToken().length() != 0) throw new Error("Unexpected number of test directories!");
+		return testdirs.get(0);
+	}
+	
+	public File cleanDriveDirectory() throws IOException, GeneralSecurityException, InterruptedException
+	{
+		close();
 		
+		resetTestDirectory(getTestDirectory());
+		
+		drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
+
+		File testdir = drive.getRoot().getChildren("test").get(0);
+		testid = testdir.getId();
+		return testdir;
+	}
+	
+	private void resetTestDirectory(com.google.api.services.drive.model.File testFile) throws IOException, InterruptedException
+	{
 		ExponentialBackOff backoff = new ExponentialBackOff.Builder().build();
 		while(true)
 		{
-			try { cleanTestDirectory(remote); break; }
+			try
+			{
+				com.google.api.services.drive.Drive.Files.List lst = remote.files().list().setQ("'"+testFile.getId()+"' in parents and trashed=false");
+	
+				final List<com.google.api.services.drive.model.File> googleChildren = new ArrayList<com.google.api.services.drive.model.File>();
+				do
+				{
+					FileList files = lst.execute();
+					for(com.google.api.services.drive.model.File child : files.getItems())
+						googleChildren.add(child);
+					lst.setPageToken(files.getNextPageToken());
+				} while(lst.getPageToken() != null && lst.getPageToken().length() > 0);
+	
+				for(com.google.api.services.drive.model.File f : googleChildren) remote.files().delete(f.getId()).execute();
+				break;
+			}
 			catch(GoogleJsonResponseException t)
 			{
 				if(t.getMessage().startsWith("500 Internal Server Error")) System.err.println("500 Internal Server Error while cleaning test directory");
@@ -112,53 +120,51 @@ public class DriveBuilder implements Closeable
 				Thread.sleep(backOffMillis);
 			}
 		}
-		
-		drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
+	}
 
+	public File uncleanDriveDirectory() throws IOException, GeneralSecurityException, InterruptedException
+	{
+		close();
 		
+		if(testid == null) throw new Error("Must clean up for new test (using cleanTestDir) before reusing directory with new drive");
+
+		drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
 		return drive.getRoot().getChildren("test").get(0);
 	}
 	
-	public void cleanTestDirectory(com.google.api.services.drive.Drive remote) throws IOException
+	private java.io.File mountTestDirectory() throws IOException, UnsatisfiedLinkError, FuseException
 	{
-		com.google.api.services.drive.Drive.Files.List lst = remote.files().list().setQ("'"+TESTID+"' in parents and trashed=false");
-
-		final List<com.google.api.services.drive.model.File> googleChildren = new ArrayList<com.google.api.services.drive.model.File>();
-		do
-		{
-			FileList files = lst.execute();
-			for(com.google.api.services.drive.model.File child : files.getItems())
-				googleChildren.add(child);
-			lst.setPageToken(files.getNextPageToken());
-		} while(lst.getPageToken() != null && lst.getPageToken().length() > 0);
-
-		for(com.google.api.services.drive.model.File f : googleChildren)
-		{
-			remote.files().delete(f.getId()).execute();
-		}
-	}
-
-	public File uncleanTestDir() throws IOException, GeneralSecurityException, InterruptedException
-	{
-		if(drive != null)
-		{
-			drive.flush(true);
-			drive.close();
-		}
-		
-		HttpTransport httpTransport = GoogleNetHttpTransport.newTrustedTransport();
-
-		FileDataStoreFactory dataStoreFactory = new FileDataStoreFactory(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "auth"));
-		JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
-		GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(httpTransport, JSON_FACTORY, "930897891601-4mbqrmuu5osvk7j3vlkv8k59liot620f.apps.googleusercontent.com", "v18DcOoqIvmVgPVtisCijpTV", Collections.singleton(DriveScopes.DRIVE)).setDataStoreFactory(dataStoreFactory).build();
-		Credential credential = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
-
-		com.google.api.services.drive.Drive remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
-		
 		drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
 
+		// Create and mount the filesystem
+		mountPoint = Files.createTempDir();
+		filesystem = new GoogleDriveLinuxFs(drive, httpTransport);
+		filesystem.mount(mountPoint, false);
 
-		return drive.getRoot().getChildren("test").get(0);
+		// Warm the cache by prefetching the drive root, which greatly improves the user experience
+		filesystem.getRoot().getChildren();
+		filesystem.getRoot().considerAsyncDirectoryRefresh(1, TimeUnit.HOURS);
+
+		java.io.File testdir = new java.io.File(mountPoint, "test");
+		if(!testdir.exists() || !testdir.isDirectory()) throw new Error("Could not locate test directory");
+
+		return testdir;
+	}
+	
+	public java.io.File cleanMountedDirectory() throws UnsatisfiedLinkError, FuseException, IOException, GeneralSecurityException, InterruptedException
+	{
+		close();
+		
+		resetTestDirectory(getTestDirectory());
+		
+		return mountTestDirectory();
+	}
+	
+	public java.io.File uncleanMountedDirectory() throws UnsatisfiedLinkError, FuseException, IOException, GeneralSecurityException
+	{
+		close();
+
+		return mountTestDirectory();
 	}
 	
 	@Override
@@ -172,6 +178,19 @@ public class DriveBuilder implements Closeable
 	public void close() throws IOException
 	{
 		if(drive != null) drive.close();
+		
+		if(filesystem != null)
+		{
+			filesystem.destroy();
+			filesystem = null;
+		}
+		
+		if(mountPoint != null && mountPoint.exists())
+		{
+			FuseJna.unmount(mountPoint);
+			mountPoint.delete();
+			mountPoint = null;
+		}
 	}
 	
 }
