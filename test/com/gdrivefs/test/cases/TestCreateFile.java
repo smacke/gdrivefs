@@ -34,4 +34,26 @@ public class TestCreateFile
 			builder.close();
 		}
 	}
+
+	@Test
+	public void testChangePersistence() throws IOException, GeneralSecurityException, InterruptedException
+	{
+		DriveBuilder builder = new DriveBuilder();
+		try
+		{
+			File test = builder.cleanDriveDirectory();
+			Assert.assertEquals(0, test.getChildren().size());
+			File noise = test.createFile("hello.txt");
+			Assert.assertEquals(1, test.getChildren().size());
+			builder.flush();
+			Assert.assertEquals(1, test.getChildren().size());
+			test = builder.uncleanDriveDirectory();
+			test.refresh();
+			Assert.assertEquals(1, test.getChildren().size());
+		}
+		finally
+		{
+			builder.close();
+		}
+	}
 }
