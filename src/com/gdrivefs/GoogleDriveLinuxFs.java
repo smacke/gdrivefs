@@ -2,8 +2,6 @@ package com.gdrivefs;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.security.GeneralSecurityException;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,16 +23,7 @@ import net.fusejna.util.FuseFilesystemAdapterAssumeImplemented;
 import com.gdrivefs.internal.FileWriteCollector;
 import com.gdrivefs.simplecache.Drive;
 import com.gdrivefs.simplecache.File;
-import com.google.api.client.auth.oauth2.Credential;
-import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
-import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
-import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
-import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
 import com.google.api.client.http.HttpTransport;
-import com.google.api.client.json.JsonFactory;
-import com.google.api.client.json.jackson2.JacksonFactory;
-import com.google.api.client.util.store.FileDataStoreFactory;
-import com.google.api.services.drive.DriveScopes;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.MemoryDatabase;
 
@@ -47,95 +36,11 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	{
 		this.drive = drive;
 	}
-	
-	public static void checkArguments(String email, java.io.File mountPoint)
+
+	public GoogleDriveLinuxFs setLoggingStatus(boolean isEnabled)
 	{
-		boolean error = false;
-		
-		if(email != null && !email.matches("[a-zA-Z0-9\\.\\-_]+@[a-zA-Z0-9\\-_][a-zA-Z0-9\\.\\-_]+\\.[a-zA-Z0-9\\.\\-_]+[a-zA-Z0-9\\-_]+"))
-		{
-			System.err.println("Invalid email address: "+email);
-			error = true;
-		}
-
-		if(mountPoint == null)
-		{
-			System.err.println("Must specify a mount point (an empty directory) as a command line argument.");
-			error = true;
-		}
-		else if(!mountPoint.exists())
-		{
-			System.err.println("Mountpoint ("+mountPoint.getAbsolutePath()+") does not exist; expected empty directory.");
-			error = true;
-		}
-		else if(!mountPoint.isDirectory())
-		{
-			System.err.println("Mountpoint ("+mountPoint.getAbsolutePath()+") is not an empty directory.");
-			error = true;
-		}
-		else if(mountPoint.listFiles().length > 0)
-		{
-			System.err.println("Mountpoint ("+mountPoint.getAbsolutePath()+") is not an empty directory.");
-			error = true;
-		}
-		
-		if(error)
-		{
-			System.err.println("Usage: "+GoogleDriveLinuxFs.class.getSimpleName()+" <email_address> <mountpoint>");
-			System.exit(1);
-		}
-	}
-	
-	public static void main(final String... args) throws FuseException, GeneralSecurityException, IOException, InterruptedException
-	{
-		String email = null;
-		java.io.File mountPoint = null;
-
-		if(args.length == 1)
-		{
-			mountPoint = new java.io.File(args[0]);
-		}
-		if (args.length == 2)
-		{
-			email = args[0];
-			mountPoint = new java.io.File(args[1]);
-		}
-
-		checkArguments(email, mountPoint);
-
-		HttpTransport httpTransport = GoogleNetHttpTransport.newTrustedTransport();
-
-		FileDataStoreFactory dataStoreFactory = new FileDataStoreFactory(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "auth"));
-		JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
-		GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(httpTransport, JSON_FACTORY, "930897891601-4mbqrmuu5osvk7j3vlkv8k59liot620f.apps.googleusercontent.com", "v18DcOoqIvmVgPVtisCijpTV", Collections.singleton(DriveScopes.DRIVE)).setDataStoreFactory(dataStoreFactory).build();
-		Credential credential = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
-		
-		com.google.api.services.drive.Drive remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
-		com.gdrivefs.simplecache.Drive drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
-		
-		GoogleDriveLinuxFs filesystem = null;
-		
-		try
-		{
-			// Create and mount the filesystem
-			filesystem = new GoogleDriveLinuxFs(drive, httpTransport);
-			filesystem.log(true);
-			filesystem.mount(mountPoint, false);
-			
-			// Warm the cache by prefetching the drive root, which greatly improves the user experience
-			filesystem.getRoot().getChildren();
-			filesystem.getRoot().considerAsyncDirectoryRefresh(1, TimeUnit.HOURS);
-			
-			// Wait for filesystem to be unmounted by the user
-			synchronized(filesystem)
-			{
-				while(filesystem.isMounted()) filesystem.wait();
-			}
-		}
-		finally
-		{
-			if(filesystem != null) filesystem.destroy();
-		}
+		super.log(isEnabled);
+		return this;
 	}
 	
 	public void flush(boolean flushUploads) throws InterruptedException
