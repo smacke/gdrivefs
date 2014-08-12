@@ -1,6 +1,29 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <project default="create_run_jar" name="Create Runnable Jar for Project GoogleFS with Jar-in-Jar Loader">
-    <target name="create_run_jar">
+	<path id="libs">
+		<fileset dir="../libs/" includes="*.jar"/>
+	</path>
+	<path id="app">
+		<fileset dir="../" includes="gdrive-*.jar"/>
+	</path>
+	<path id="all">
+		<pathelement location="../bin/" />
+		<fileset dir="../libs/" includes="*.jar"/>
+	</path>
+
+	<property name="tests" value="*"/>
+
+	<target name="clean">
+		<delete dir="../bin"/>
+	</target>
+	
+	<target name="compile">
+		<mkdir dir="../bin"/>
+		<javac srcdir="../src" destdir="../bin" classpathref="libs" includeantruntime="true"/>
+		<javac srcdir="../test" destdir="../bin" classpathref="all" includeantruntime="true"/>
+	</target>
+	
+    <target name="create_run_jar" depends="compile">
         <jar destfile="../gdrivefs.jar">
             <manifest>
                 <attribute name="Main-Class" value="org.eclipse.jdt.internal.jarinjarloader.JarRsrcLoader"/>
@@ -13,4 +36,24 @@
             <zipfileset dir="../libs" includes="**"/>
         </jar>
     </target>
+	<target name="test" depends="create_run_jar">
+		<mkdir dir="../bin/test-results"/>
+		<junit showoutput="true" haltonfailure="false" logfailedtests="true" printsummary="true" dir="../bin">
+			<classpath>
+				<path refid="libs"/>
+				<path refid="all"/>
+			</classpath>
+			<formatter type="brief" usefile="false" />
+			<formatter type="xml" />
+			<batchtest fork="yes" todir="../bin/test-results">
+				<fileset dir="../test" includes="**/${tests}.java"/>
+			</batchtest>
+		</junit>
+
+		<mkdir dir="../bin/test-report"/>
+		<junitreport todir="../bin/test-report">
+			<fileset dir="../bin/test-results" includes="TEST-*.xml"/>
+			<report todir="../bin/test-report"/>
+		</junitreport>
+	</target>
 </project>
