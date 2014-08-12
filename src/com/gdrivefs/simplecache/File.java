@@ -110,7 +110,7 @@ public class File
 	
 	void playLogOnMetadata() throws IOException
 	{
-		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='setTitle' OR COMMAND='mkdir' OR COMMAND='createFile' ORDER BY ID ASC"))
+		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='setTitle' OR COMMAND='mkdir' OR COMMAND='createFile' OR COMMAND='truncate' OR COMMAND='write' OR COMMAND='update' ORDER BY ID ASC"))
 			playOnMetadata(row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 	}
 	
@@ -646,6 +646,21 @@ public class File
 			releaseWrite();
 		}
 	}
+	
+    public void write(byte[] bytes, final long offset) throws DatabaseConnectionException, IOException
+    {
+    	String chunkMd5 = DigestUtils.md5Hex(bytes);
+		acquireWrite();
+		try
+		{
+			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
+			playOnMetadata("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
+		}
+		finally
+		{
+			releaseWrite();
+		}
+	}
 
     protected byte[] downloadFragment(long startPosition, long endPosition) throws IOException
 	{
@@ -1001,6 +1016,14 @@ public class File
 			size = Long.parseLong(logEntry[1]);
 			fileMd5 = "null".equals(logEntry[2]) ? null : logEntry[2];
 		}
+		else if("write".equals(command))
+		{
+			long offset = Long.parseLong(logEntry[1]);
+			long length = Long.parseLong(logEntry[2]);
+			size = Math.max(getSize(), offset+length);
+			fileMd5 = "null".equals(logEntry[4]) ? null : logEntry[4];
+			System.out.println("write set md5: "+fileMd5);
+		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
 
@@ -1146,6 +1169,10 @@ public class File
 			}
 		}
 		else if("truncate".equals(command))
+		{
+			throw new UnsupportedOperationException("Not yet implemented");
+		}
+		else if("write".equals(command))
 		{
 			throw new UnsupportedOperationException("Not yet implemented");
 		}
