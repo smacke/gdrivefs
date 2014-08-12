@@ -155,7 +155,9 @@ public class DriveBuilder implements Closeable
 	{
 		close();
 		
-		resetTestDirectory(getTestDirectory());
+		com.google.api.services.drive.model.File testdir = getTestDirectory();
+		testid = testdir.getId();
+		resetTestDirectory(testdir);
 		
 		return mountTestDirectory();
 	}

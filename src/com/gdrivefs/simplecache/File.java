@@ -632,9 +632,21 @@ public class File
 			releaseRead();
 		}
 	}
-    
-    
-    
+	
+    public void truncate(final long offset) throws DatabaseConnectionException, IOException
+    {
+		acquireWrite();
+		try
+		{
+			playOnDatabase("truncate", this.getLocalId().toString(), Long.toString(offset), "null");
+			playOnMetadata("truncate", this.getLocalId().toString(), Long.toString(offset), "null");
+		}
+		finally
+		{
+			releaseWrite();
+		}
+	}
+
     protected byte[] downloadFragment(long startPosition, long endPosition) throws IOException
 	{
     	System.out.println("Downloading "+fileMd5+" "+startPosition+" "+endPosition);
@@ -982,7 +994,12 @@ public class File
 		else if("update".equals(command))
 		{
 			size = Long.parseLong(logEntry[1]);
-			fileMd5 = logEntry[2];
+			fileMd5 = "null".equals(logEntry[2]) ? null : logEntry[2];
+		}
+		else if("truncate".equals(command))
+		{
+			size = Long.parseLong(logEntry[1]);
+			fileMd5 = "null".equals(logEntry[2]) ? null : logEntry[2];
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
@@ -1127,6 +1144,10 @@ public class File
 			{
 				file.releaseWrite();
 			}
+		}
+		else if("truncate".equals(command))
+		{
+			throw new UnsupportedOperationException("Not yet implemented");
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
