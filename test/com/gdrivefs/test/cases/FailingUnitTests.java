@@ -2,8 +2,8 @@ package com.gdrivefs.test.cases;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.security.GeneralSecurityException;
-import java.util.Arrays;
 
 import net.fusejna.FuseException;
 
@@ -67,6 +67,30 @@ public class FailingUnitTests
 				Assert.assertEquals(5, helloFile.getSize());
 			}
 			
+		}
+		finally
+		{
+			builder.close();
+		}
+	}
+	
+	@Test
+	public void testRandomAccessWrites() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	{
+		DriveBuilder builder = new DriveBuilder();
+		try
+		{
+			{
+				java.io.File test = builder.cleanMountedDirectory();
+				RandomAccessFile file = new RandomAccessFile(new java.io.File(test, "hello.txt"), "rw");
+				file.writeBytes("00000");
+				file.seek(3);
+				file.writeBytes("456789");
+				file.seek(0);
+				file.writeBytes("123");
+				file.close();
+				Assert.assertEquals("123456789", FileUtils.readFileToString(new java.io.File(test, "hello.txt")));
+			}
 		}
 		finally
 		{
