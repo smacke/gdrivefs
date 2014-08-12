@@ -124,6 +124,7 @@ public class DriveBuilder implements Closeable
 
 	public File uncleanDriveDirectory() throws IOException, GeneralSecurityException, InterruptedException
 	{
+		flush();
 		close();
 		
 		if(testid == null) throw new Error("Must clean up for new test (using cleanTestDir) before reusing directory with new drive");

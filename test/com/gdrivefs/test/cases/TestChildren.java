@@ -87,6 +87,7 @@ public class TestChildren
 			test.refresh();
 			Assert.assertEquals(3, test.getChildren("noise").size());
 			
+			builder.flush();
 			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals(3, test.getChildren("noise").size());
 		}
@@ -109,6 +110,7 @@ public class TestChildren
 			foo.mkdir("noise");
 			Assert.assertEquals(2, foo.getChildren().size());
 			
+			builder.flush();
 			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals(2, test.getChildren().get(0).getChildren().size());
 		}
