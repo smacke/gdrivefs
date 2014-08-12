@@ -3,6 +3,9 @@ package com.gdrivefs.test.cases;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 
+import net.fusejna.FuseException;
+
+import org.apache.commons.io.FileUtils;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -32,6 +35,36 @@ public class PerfTests
 			}
 			System.out.println(count);
 			Assert.assertTrue(count > 10000);
+		}
+		finally
+		{
+			builder.close();
+		}
+	}
+
+	@Test
+	public void testCachedReads() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	{
+		DriveBuilder builder = new DriveBuilder();
+		try
+		{
+			java.io.File test = builder.cleanMountedDirectory();
+			java.io.File hello = new java.io.File(test, "hello.txt");
+			FileUtils.write(hello, "Hello World!");
+			builder.flush();
+			
+			// Pull it into cache
+			FileUtils.readFileToString(hello);
+			
+			int count = 0;
+			long start = System.currentTimeMillis();
+			while(System.currentTimeMillis()-start < 1000)
+			{
+				Assert.assertEquals("Hello World!", FileUtils.readFileToString(hello));
+				count++;
+			}
+			System.out.println(count);
+			Assert.assertTrue(count > 25);
 		}
 		finally
 		{

@@ -50,7 +50,7 @@ public class File
 	Drive drive;
 	
 	// Cache (null indicates field must be fetched from db)
-	Date metadataAsOfDate;
+	Long metadataAsOfDate;
 	Date childrenAsOfDate;
 	Date parentsAsOfDate;
 	String title;
@@ -97,7 +97,7 @@ public class File
 			mimeType = row.getString("MIMETYPE");
 			size = row.getLong("SIZE");
 			modifiedTime = row.getTimestamp("MTIME");
-			metadataAsOfDate = row.getTimestamp("METADATAREFRESHED");
+			metadataAsOfDate = row.getTimestamp("METADATAREFRESHED").getTime();
 			childrenAsOfDate = row.getTimestamp("CHILDRENREFRESHED");
 			parentsAsOfDate = row.getTimestamp("PARENTSREFRESHED");
 			localFileId = row.getUuid("LOCALID");
@@ -397,9 +397,14 @@ public class File
 	
 	void refresh(final com.google.api.services.drive.model.File file, final Date asof) throws IOException, SQLException
 	{
+		refresh(file, asof.getTime());
+	}
+	
+	void refresh(final com.google.api.services.drive.model.File file, final long asof) throws IOException, SQLException
+	{
 		if(drive.lock.getReadLockCount() == 0 && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
 		
-		if(metadataAsOfDate != null && !metadataAsOfDate.after(asof)) return; // Bail with no action if the asof date isn't newer.
+		if(metadataAsOfDate != null && metadataAsOfDate >= asof) return; // Bail with no action if the asof date isn't newer.
 		
 		if(this.googleFileId != null && !this.googleFileId.equals(file.getId())) throw new Error("File ID Miss-match: "+this.googleFileId+" "+file.getId());
 		this.googleFileId = file.getId();
@@ -418,7 +423,7 @@ public class File
 				if(localFileId == null) localFileId = UUID.randomUUID();
 				
 				db.execute("DELETE FROM FILES WHERE ID=?", file.getId());
-				db.execute("INSERT INTO FILES(ID, LOCALID, TITLE, MIMETYPE, MD5HEX, SIZE, MTIME, DOWNLOADURL, METADATAREFRESHED, CHILDRENREFRESHED) VALUES(?,?,?,?,?,?,?,?,?,?)", file.getId(), localFileId, file.getTitle(), file.getMimeType(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl(), asof, childrenAsOfDate != null ? childrenAsOfDate : null);
+				db.execute("INSERT INTO FILES(ID, LOCALID, TITLE, MIMETYPE, MD5HEX, SIZE, MTIME, DOWNLOADURL, METADATAREFRESHED, CHILDRENREFRESHED) VALUES(?,?,?,?,?,?,?,?,?,?)", file.getId(), localFileId, file.getTitle(), file.getMimeType(), file.getMd5Checksum(), file.getQuotaBytesUsed(), new Date(file.getModifiedDate().getValue()), file.getDownloadUrl(), new Date(asof), childrenAsOfDate != null ? childrenAsOfDate : null);
 				return null;
 			}
 		});
@@ -461,7 +466,7 @@ public class File
 	
 	Boolean isDirectoryNoIO()
 	{
-		Date asof = metadataAsOfDate;
+		Long asof = metadataAsOfDate;
 		String mimeType = this.mimeType;
 		if(asof == null && mimeType == null) return null;
 		return MIME_FOLDER.equals(mimeType);
@@ -501,7 +506,7 @@ public class File
 		try
 		{
 			if(metadataAsOfDate == null) readBasicMetadata();
-			return metadataAsOfDate;
+			return new Date(metadataAsOfDate);
 		}
 		finally
 		{
@@ -981,7 +986,7 @@ public class File
 			mimeType = MIME_FOLDER;
 			size = null;
 			modifiedTime = new Timestamp(Long.parseLong(logEntry[3]));
-			metadataAsOfDate = new Timestamp(Long.parseLong(logEntry[3]));
+			metadataAsOfDate = new Timestamp(Long.parseLong(logEntry[3])).getTime();
 			childrenAsOfDate = null;
 			parentsAsOfDate = null;
 			localFileId = UUID.fromString(logEntry[1]);
@@ -999,7 +1004,7 @@ public class File
 			mimeType = "application/octet-stream";
 			size = 0L;
 			modifiedTime = new Timestamp(Long.parseLong(logEntry[3]));
-			metadataAsOfDate = new Timestamp(Long.parseLong(logEntry[3]));
+			metadataAsOfDate = new Timestamp(Long.parseLong(logEntry[3])).getTime();
 			childrenAsOfDate = null;
 			parentsAsOfDate = null;
 			localFileId = UUID.fromString(logEntry[1]);
