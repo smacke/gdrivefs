@@ -83,12 +83,18 @@ public class FailingUnitTests
 			{
 				java.io.File test = builder.cleanMountedDirectory();
 				RandomAccessFile file = new RandomAccessFile(new java.io.File(test, "hello.txt"), "rw");
-				file.writeBytes("00000");
-				file.seek(3);
-				file.writeBytes("456789");
-				file.seek(0);
-				file.writeBytes("123");
-				file.close();
+				try
+				{
+					file.writeBytes("00000");
+					file.seek(3);
+					file.writeBytes("456789");
+					file.seek(0);
+					file.writeBytes("123");
+				}
+				finally
+				{
+					file.close();
+				}
 				Assert.assertEquals("123456789", FileUtils.readFileToString(new java.io.File(test, "hello.txt")));
 			}
 		}
