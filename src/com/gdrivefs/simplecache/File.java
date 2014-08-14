@@ -1181,10 +1181,12 @@ public class File
 		}
 		else if("truncate".equals(command))
 		{
+			// TODO: https://developers.google.com/drive/v2/reference/files/patch
 			throw new UnsupportedOperationException("Not yet implemented");
 		}
 		else if("write".equals(command))
 		{
+			// TODO: https://developers.google.com/drive/v2/reference/files/patch
 			throw new UnsupportedOperationException("Not yet implemented");
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
