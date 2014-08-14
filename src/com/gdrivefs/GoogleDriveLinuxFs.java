@@ -373,7 +373,9 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		{
 			if(collector == null)
 			{
-				collector = new FileWriteCollector(path.substring(path.lastIndexOf('/')+1));
+				// we cannot guarantee consistency for files that are being written while being moved. :(
+				File f = getCachedPath(path);
+				collector = new FileWriteCollector(f, path.substring(path.lastIndexOf('/')+1));
 				openFiles.put(path, collector);
 			}
 			
@@ -405,6 +407,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		try
 		{
 			if(collector == null) return 0;
+			collector.flushCurrentFragmentToDb();
 			getCachedPath(path).update(collector.getFile());
 			openFiles.remove(path);
 			collector.getFile();
@@ -507,6 +510,9 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		
 		try
 		{
+			for (FileWriteCollector collector : openFiles.values()) {
+				collector.flushCurrentFragmentToDb();
+			}
 			drive.close();
 		}
 		catch(IOException e)

@@ -1,20 +1,24 @@
 package com.gdrivefs.internal;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.util.UUID;
 
+import com.gdrivefs.simplecache.File;
+
 public class FileWriteCollector
 {
-	File file;
+	java.io.File diskFile;
+	File cachedFile;
 	RandomAccessFile delegate;
 	long currentPosition = 0;
+	long prevPosition = currentPosition;
 	
-	public FileWriteCollector(String name) throws IOException
+	public FileWriteCollector(File cachedFile, String name) throws IOException
 	{
-		file = new java.io.File(new java.io.File(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "scratchspace"), UUID.randomUUID().toString()), name);
+		this.cachedFile = cachedFile;
+		this.diskFile = new java.io.File(new java.io.File(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "scratchspace"), UUID.randomUUID().toString()), name);
 	}
 	
 	public void write(long position, ByteBuffer buf, long length) throws IOException
@@ -23,19 +27,43 @@ public class FileWriteCollector
 		if(buf.capacity() != length) throw new IOException("Unexpected discrepency!");
 		if(delegate == null)
 		{
-			file.getParentFile().mkdirs();
-			delegate = new RandomAccessFile(file, "rw");
+			diskFile.getParentFile().mkdirs();
+			delegate = new RandomAccessFile(diskFile, "rw");
 		}
 		
-		if(position != currentPosition) throw new IOException("Only linear writes are supported! (expected: "+currentPosition+ ", got: "+position+")");
+		if(position != currentPosition) {
+			flushFragmentToDb(prevPosition, currentPosition);
+			prevPosition = currentPosition = position;
+		}
 		delegate.getChannel().write(buf, currentPosition);
 		currentPosition += length;
 	}
 	
-	public File getFile() throws IOException
+	
+	public java.io.File getFile() throws IOException
 	{
 		delegate.close();
 		currentPosition = -1;
-		return file;
+		return diskFile;
+	}
+
+	public void flushCurrentFragmentToDb() throws IOException {
+		flushFragmentToDb(prevPosition, currentPosition);
+		prevPosition = currentPosition;
+	}
+	
+	private void flushFragmentToDb(long start, long stop) throws IOException {
+		// TODO (smacke): need to overwrite overlapping fragments which are out-of-date
+		// Probably put this in File#storeFragment()
+		assert start <= stop;
+		if (start == stop) {
+			return;
+		}
+		long position = start;
+		int len = (int)(stop-start);
+		byte[] fragment = new byte[len];
+		delegate.seek(position);
+		delegate.read(fragment, 0, len);
+		cachedFile.storeFragment(null, position, fragment);
 	}
 }

@@ -19,6 +19,8 @@ import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+import javax.annotation.Nullable;
+
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 
@@ -727,10 +729,14 @@ public class File
     
 
     
-    protected void storeFragment(String fileMd5, long position, byte[] data) throws IOException
+    // TODO (smacke): probably shouldn't be public
+    public void storeFragment(
+    		@Nullable String fileMd5, // null file md5 indicates that this op is coming in locally and is most up-to-date
+    		long position,
+    		byte[] data) throws IOException
     {
     	String chunkMd5 = DigestUtils.md5Hex(data);
-		drive.getDatabase().execute("INSERT INTO FRAGMENTS(FILEMD5, CHUNKMD5, STARTBYTE, ENDBYTE) VALUES(?,?,?,?)", fileMd5, chunkMd5, position, position + data.length);
+		drive.getDatabase().execute("INSERT INTO FRAGMENTS(LOCALID, FILEMD5, CHUNKMD5, STARTBYTE, ENDBYTE) VALUES(?,?,?,?,?)", getLocalId(), fileMd5, chunkMd5, position, position + data.length);
 		FileUtils.writeByteArrayToFile(getCacheFile(chunkMd5), data);
     }
     
@@ -753,7 +759,7 @@ public class File
 	public byte[] getBytesByAnyMeans(long start, long end) throws DatabaseConnectionException, IOException
 	{
 		byte[] output = new byte[(int)(end-start)];
-		List<DatabaseRow> fragments = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE FILEMD5=? AND STARTBYTE < ? AND ENDBYTE > ? ORDER BY STARTBYTE ASC", getMd5Checksum(), end, start);
+		List<DatabaseRow> fragments = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE LOCALID=? AND STARTBYTE < ? AND ENDBYTE > ? ORDER BY STARTBYTE ASC", getLocalId(), end, start);
 
 		long currentPosition = start;
 		for(DatabaseRow fragment : fragments)

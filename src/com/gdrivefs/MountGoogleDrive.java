@@ -110,7 +110,7 @@ public class MountGoogleDrive
 		
 		if(errors.toString().length() == 0) return null;
 		
-		errors.append("Usage: "+GoogleDriveLinuxFs.class.getSimpleName()+" <email_address> <mountpoint>\n");
+		errors.append("Usage: "+MountGoogleDrive.class.getSimpleName()+" <email_address> <mountpoint>\n");
 		return errors.toString();
 	}
 	
