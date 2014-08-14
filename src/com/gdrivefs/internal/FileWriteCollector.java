@@ -64,6 +64,6 @@ public class FileWriteCollector
 		byte[] fragment = new byte[len];
 		delegate.seek(position);
 		delegate.read(fragment, 0, len);
-		cachedFile.storeFragment(null, position, fragment);
+		cachedFile.write(fragment, position);
 	}
 }

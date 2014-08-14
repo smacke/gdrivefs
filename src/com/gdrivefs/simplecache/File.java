@@ -660,6 +660,7 @@ public class File
 		acquireWrite();
 		try
 		{
+			storeFragment(null, offset, bytes);
 			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
 			playOnMetadata("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
 		}
@@ -729,8 +730,7 @@ public class File
     
 
     
-    // TODO (smacke): probably shouldn't be public
-    public void storeFragment(
+    private void storeFragment(
     		@Nullable String fileMd5, // null file md5 indicates that this op is coming in locally and is most up-to-date
     		long position,
     		byte[] data) throws IOException
