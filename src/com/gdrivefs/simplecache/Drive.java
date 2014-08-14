@@ -238,7 +238,7 @@ public class Drive implements Closeable
 		{
 			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
 			String googleId = File.getGoogleId(this, id);
-			if(googleFiles.containsKey(googleId)) return googleFiles.get(googleId);
+			if(googleId != null && googleFiles.containsKey(googleId)) return googleFiles.get(googleId);
 			
 			if(googleId == null)
 			{
