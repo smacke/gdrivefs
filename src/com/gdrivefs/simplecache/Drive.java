@@ -35,7 +35,7 @@ public class Drive implements Closeable
 	
 	// Drive-wide singularity cache
 	// TODO: Use soft references and clear the map when references are dropped
-	Map<String, File> googleFiles = new HashMap<String, File>();
+	Map<String, File> googleFiles = Maps.newConcurrentMap();
 	Map<UUID, File> unsyncedFiles = Maps.newConcurrentMap();
 
 	DriveExecutorService logPlayer = new DriveExecutorService();
@@ -246,9 +246,6 @@ public class Drive implements Closeable
 				File file = unsyncedFiles.get(id);
 				if(file != null) return file;
 				file = new File(this, id);
-				// TODO (smacke): is this a concurrency bug? Even though UUID's are
-				// presumably unique, what happens if we do concurrent puts and a
-				// resize or some other destructive operation occurs?
 				unsyncedFiles.put(id, file);
 				return file;
 			}
