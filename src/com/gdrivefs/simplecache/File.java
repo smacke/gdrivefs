@@ -736,7 +736,8 @@ public class File
     		byte[] data) throws IOException
     {
     	String chunkMd5 = DigestUtils.md5Hex(data);
-		drive.getDatabase().execute("INSERT INTO FRAGMENTS(LOCALID, FILEMD5, CHUNKMD5, STARTBYTE, ENDBYTE) VALUES(?,?,?,?,?)", getLocalId(), fileMd5, chunkMd5, position, position + data.length);
+		drive.getDatabase().execute("INSERT INTO FRAGMENTS(LOCALID, FILEMD5, CHUNKMD5, STARTBYTE, ENDBYTE) VALUES(?,?,?,?,?)",
+				getLocalId(), fileMd5, chunkMd5, position, position + data.length);
 		FileUtils.writeByteArrayToFile(getCacheFile(chunkMd5), data);
     }
     
@@ -1031,7 +1032,11 @@ public class File
 		{
 			long offset = Long.parseLong(logEntry[1]);
 			long length = Long.parseLong(logEntry[2]);
-			size = Math.max(getSize(), offset+length);
+			if (size == null) { // N.B. (smacke): can't call getSize() or we will infinite recurse
+				size = offset+length;
+			} else {
+				size = Math.max(size, offset+length);
+			}
 			fileMd5 = "null".equals(logEntry[4]) ? null : logEntry[4];
 			System.out.println("write set md5: "+fileMd5);
 		}
@@ -1187,7 +1192,13 @@ public class File
 		else if("write".equals(command))
 		{
 			// TODO: https://developers.google.com/drive/v2/reference/files/patch
-			throw new UnsupportedOperationException("Not yet implemented");
+//			throw new UnsupportedOperationException("Not yet implemented");
+			// no-op
+//			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
+			String googleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
+			long position = Long.parseLong(logEntry[1]);
+			long len = Long.parseLong(logEntry[2]);
+			byte[] data = FileUtils.readFileToByteArray(getCacheFile(logEntry[3]));
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}

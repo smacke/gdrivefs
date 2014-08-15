@@ -55,7 +55,9 @@ public class FileWriteCollector
 	private void flushFragmentToDb(long start, long stop) throws IOException {
 		// TODO (smacke): need to overwrite overlapping fragments which are out-of-date
 		// Probably put this in File#storeFragment()
-		assert start <= stop;
+		if (start > stop) {
+			throw new IllegalArgumentException(start + ", " + stop);
+		}
 		if (start == stop) {
 			return;
 		}
