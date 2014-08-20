@@ -59,26 +59,19 @@ public class MountGoogleDrive
 		
 		GoogleDriveLinuxFs filesystem = null;
 		
-		try
-		{
-			// Create and mount the filesystem
-			filesystem = new GoogleDriveLinuxFs(drive, httpTransport);
-			filesystem.setLoggingStatus(true);
-			filesystem.mount(mountPoint, false);
+		// Create and mount the filesystem
+		filesystem = new GoogleDriveLinuxFs(drive, httpTransport);
+		filesystem.setLoggingStatus(true);
+		filesystem.mount(mountPoint, false);
 			
-			// Warm the cache by prefetching the drive root, which greatly improves the user experience
-			filesystem.getRoot().getChildren();
-			filesystem.getRoot().considerAsyncDirectoryRefresh(1, TimeUnit.HOURS);
+		// Warm the cache by prefetching the drive root, which greatly improves the user experience
+		filesystem.getRoot().getChildren();
+		filesystem.getRoot().considerAsyncDirectoryRefresh(1, TimeUnit.HOURS);
 			
-			// Wait for filesystem to be unmounted by the user
-			synchronized(filesystem)
-			{
-				while(filesystem.isMounted()) filesystem.wait();
-			}
-		}
-		finally
+		// Wait for filesystem to be unmounted by the user
+		synchronized(filesystem)
 		{
-			if(filesystem != null) filesystem.destroy();
+			while(filesystem.isMounted()) filesystem.wait();
 		}
 	}
 	

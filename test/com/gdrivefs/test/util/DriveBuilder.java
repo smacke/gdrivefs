@@ -180,9 +180,18 @@ public class DriveBuilder implements Closeable
 	@Override
 	public void close() throws IOException
 	{
+		IOException exception = null;
+		
 		if(filesystem != null)
 		{
-			filesystem.destroy();
+			try
+			{
+				filesystem.unmount();
+			}
+			catch(FuseException e)
+			{
+				exception = new IOException(e);
+			}
 			filesystem = null;
 		}
 
@@ -198,6 +207,8 @@ public class DriveBuilder implements Closeable
 			mountPoint.delete();
 			mountPoint = null;
 		}
+		
+		if(exception != null) throw exception;
 	}
 	
 }

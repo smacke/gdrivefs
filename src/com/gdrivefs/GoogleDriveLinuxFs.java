@@ -502,50 +502,24 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	}
 	
 	@Override
-	public void destroy()
+	public void afterUnmount(java.io.File oldMountPoint)
 	{
-		RuntimeException exception = null;
-		
-		super.destroy();
-		
 		try
 		{
 			for (FileWriteCollector collector : openFiles.values()) {
 				collector.flushCurrentFragmentToDb();
 			}
-			drive.close();
 		}
 		catch(IOException e)
 		{
-			if(exception == null) exception = new RuntimeException(e);
+			throw new RuntimeException(e);
 		}
 		catch(RuntimeException e)
 		{
-			if(exception == null) exception = new RuntimeException(e);
-		}
-		
-		try
-		{
-			unmount();
-		}
-		catch(IOException e)
-		{
-			if(exception == null) exception = new RuntimeException(e);
-		}
-		catch(FuseException e)
-		{
-			if(exception == null) exception = new RuntimeException(e);
+			throw new RuntimeException(e);
 		}
 		
 		synchronized(this) { notifyAll(); }
-		
-		System.out.println(isMounted());
-		
-		if(exception != null)
-		{
-			exception.printStackTrace();
-			throw new RuntimeException(exception);
-		}
 	}
 	
 }
