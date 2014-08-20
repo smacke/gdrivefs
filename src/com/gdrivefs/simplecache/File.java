@@ -12,8 +12,6 @@ import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.Date;
 import java.util.GregorianCalendar;
 import java.util.List;
@@ -739,33 +737,12 @@ public class File
         long start = fragmentStartByte;
         long end = fragmentStartByte + fragment.length;
         // get overlapping fragments
-        List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE (ENDBYTE > ? AND ENDBYTE <= ?) OR (STARTBYTE >= ? AND STARTBYTE < ?)", start, end, start, end);
-        // first sort by startbyte
-        // TODO (smacke): is the list random access?
-        Collections.sort(rows, new Comparator<DatabaseRow>() {
-            @Override
-            public int compare(DatabaseRow x, DatabaseRow y)
-            {
-                int xStart= x.getInteger("STARTBYTE");
-                int yStart= y.getInteger("STARTBYTE");
-                if (xStart < yStart) {
-                    return -1;
-                } else if (xStart > yStart) {
-                    return 1;
-                } else {
-                    // slight optimization -- use the one that spans more data,
-                    // if they start at the same place (fewer I/O calls)
-                    int xEnd = x.getInteger("ENDBYTE");
-                    int yEnd = y.getInteger("ENDBYTE");
-                    if (xEnd < yEnd) {
-                        return 1;
-                    } else if (xEnd > yEnd) {
-                        return -1;
-                    }
-                }
-                return 0;
-            }
-        });
+        // sort by startbyte asc
+        // then endbyte desc
+        // this allows for a slight optimization during merging --
+        // we use the fragment that spans more data when possible,
+        // if two fragments start in the same place (fewer I/O calls)
+        List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE (ENDBYTE > ? AND ENDBYTE <= ?) OR (STARTBYTE >= ? AND STARTBYTE < ?) ORDER BY STARTBYTE ASC, ENDBYTE DESC", start, end, start, end);
 
         long globalStartByte = fragmentStartByte;
         long globalEndByte = fragmentStartByte + fragment.length;
