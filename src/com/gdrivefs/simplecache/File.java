@@ -12,6 +12,8 @@ import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.GregorianCalendar;
 import java.util.List;
@@ -34,6 +36,7 @@ import com.google.api.client.util.IOUtils;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
 import com.google.api.services.drive.model.Property;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.DatabaseConnectionException;
@@ -729,16 +732,96 @@ public class File
     }
     
 
-    
     private void storeFragment(
-    		@Nullable String fileMd5, // null file md5 indicates that this op is coming in locally and is most up-to-date
-    		long position,
-    		byte[] data) throws IOException
-    {
-    	String chunkMd5 = DigestUtils.md5Hex(data);
-		drive.getDatabase().execute("INSERT INTO FRAGMENTS(LOCALID, FILEMD5, CHUNKMD5, STARTBYTE, ENDBYTE) VALUES(?,?,?,?,?)",
-				getLocalId(), fileMd5, chunkMd5, position, position + data.length);
-		FileUtils.writeByteArrayToFile(getCacheFile(chunkMd5), data);
+            @Nullable String fileMd5, // null file md5 indicates that this op is coming in locally and is most up-to-date
+            long fragmentStartByte,
+            byte[] fragment) throws IOException {
+        long start = fragmentStartByte;
+        long end = fragmentStartByte + fragment.length;
+        // get overlapping fragments
+        List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE (ENDBYTE > ? AND ENDBYTE <= ?) OR (STARTBYTE >= ? AND STARTBYTE < ?)", start, end, start, end);
+        // first sort by startbyte
+        // TODO (smacke): is the list random access?
+        Collections.sort(rows, new Comparator<DatabaseRow>() {
+            @Override
+            public int compare(DatabaseRow x, DatabaseRow y)
+            {
+                int xStart= x.getInteger("STARTBYTE");
+                int yStart= y.getInteger("STARTBYTE");
+                if (xStart < yStart) {
+                    return -1;
+                } else if (xStart > yStart) {
+                    return 1;
+                } else {
+                    // slight optimization -- use the one that spans more data,
+                    // if they start at the same place (fewer I/O calls)
+                    int xEnd = x.getInteger("ENDBYTE");
+                    int yEnd = y.getInteger("ENDBYTE");
+                    if (xEnd < yEnd) {
+                        return 1;
+                    } else if (xEnd > yEnd) {
+                        return -1;
+                    }
+                }
+                return 0;
+            }
+        });
+
+        long globalStartByte = fragmentStartByte;
+        long globalEndByte = fragmentStartByte + fragment.length;
+        for (DatabaseRow row : rows) {
+            globalEndByte = Math.max(globalEndByte, row.getInteger("ENDBYTE"));
+        }
+
+        byte[] merged;
+        if (rows.size() > 0) {
+            globalStartByte = Math.min(globalStartByte, rows.get(0).getInteger("STARTBYTE"));
+            merged = new byte[(int)(globalEndByte - globalStartByte)];
+
+            System.arraycopy(fragment, 0, merged, (int)(fragmentStartByte-globalStartByte), fragment.length);
+
+            long position = globalStartByte;
+
+            // skip the new fragment; we've already done an arraycopy
+            if (position == fragmentStartByte) {
+                position = fragmentStartByte + fragment.length;
+            }
+            for (int chunk=0; chunk<rows.size(); chunk++) {
+                long chunkEnd = rows.get(chunk).getInteger("ENDBYTE");
+                if (position >= chunkEnd) {
+                    continue;
+                }
+                if (position < chunkEnd) {
+                    String chunkMd5 = rows.get(chunk).getString("CHUNKMD5");
+                    int chunkStart = rows.get(chunk).getInteger("STARTBYTE");
+                    Preconditions.checkState(position >= chunkStart);
+                    byte[] fileBytes = FileUtils.readFileToByteArray(getCacheFile(chunkMd5));
+                    while (position < chunkEnd) {
+                        merged[(int)(position-globalStartByte)] = fileBytes[(int)(position-chunkStart)];
+                        position++;
+                        // skip the new fragment; we've already done an arraycopy
+                        if (position == fragmentStartByte) {
+                            position = fragmentStartByte + fragment.length;
+                        }
+                    }
+//                    // TODO (smacke): is this necessary to delete old caches? I think probably not.
+//                    // Plus this may cause race conditions with concurrent reads from google.
+//                    java.io.File chunkFile = getCacheFile(chunkMd5);
+//                    if (chunkFile.exists()) {
+//                        chunkFile.delete();
+//                    }
+                }
+            }
+
+            drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE (ENDBYTE > ? AND ENDBYTE <= ?) OR (STARTBYTE >= ? AND STARTBYTE < ?)", start, end, start, end);
+        } else {
+            merged = fragment;
+        }
+        String chunkMd5 = DigestUtils.md5Hex(merged);
+        FileUtils.writeByteArrayToFile(getCacheFile(chunkMd5), merged);
+        drive.getDatabase().execute("INSERT INTO FRAGMENTS(LOCALID, FILEMD5, CHUNKMD5, STARTBYTE, ENDBYTE) VALUES(?,?,?,?,?)",
+                getLocalId(), fileMd5, chunkMd5, globalStartByte, globalStartByte + merged.length);
+
     }
     
 	static java.io.File getCacheFile(String chunkMd5)
