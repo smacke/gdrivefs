@@ -4,7 +4,6 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.sql.SQLException;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;

@@ -34,7 +34,6 @@ import com.google.api.client.util.IOUtils;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
 import com.google.api.services.drive.model.Property;
-import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.DatabaseConnectionException;
@@ -671,12 +670,19 @@ public class File
 		}
 	}
 
-    protected byte[] downloadFragment(long startPosition, long endPosition) throws IOException
+    /**
+     * 
+     * @param startPosition
+     * @param endPosition
+     * @return Number of bytes downloaded.
+     * @throws IOException
+     */
+    protected int downloadFragment(long startPosition, long endPosition) throws IOException
 	{
     	System.out.println("Downloading "+fileMd5+" "+startPosition+" "+endPosition);
 		if(startPosition > endPosition) throw new IllegalArgumentException("startPosition (" + startPosition + ") must not be greater than endPosition (" + endPosition + ")");
 		if(startPosition > endPosition) throw new IllegalArgumentException("startPosition (" + startPosition + ") must not be greater than endPosition (" + endPosition + ")");
-		if(startPosition == endPosition) return new byte[0];
+		if(startPosition == endPosition) return 0;
             
         ByteArrayOutputStream out = new ByteArrayOutputStream();
 
@@ -698,7 +704,7 @@ public class File
         
         storeFragment(fileMd5, startPosition, bytes);
         
-        return bytes;
+        return bytes.length;
     }
 
     
@@ -771,7 +777,9 @@ public class File
                 if (position < chunkEnd) {
                     String chunkMd5 = rows.get(chunk).getString("CHUNKMD5");
                     int chunkStart = rows.get(chunk).getInteger("STARTBYTE");
-                    Preconditions.checkState(position >= chunkStart);
+                    if (position < chunkStart) {
+                    	throw new Error("inexplicable gap");
+                    }
                     byte[] fileBytes = FileUtils.readFileToByteArray(getCacheFile(chunkMd5));
                     while (position < chunkEnd) {
                         merged[(int)(position-globalStartByte)] = fileBytes[(int)(position-chunkStart)];
@@ -819,6 +827,8 @@ public class File
 	
 	public byte[] getBytesByAnyMeans(long start, long end) throws DatabaseConnectionException, IOException
 	{
+		// this will be holding a read lock
+		fillInGapsBetween(start, end);
 		byte[] output = new byte[(int)(end-start)];
 		List<DatabaseRow> fragments = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE LOCALID=? AND STARTBYTE < ? AND ENDBYTE > ? ORDER BY STARTBYTE ASC", getLocalId(), end, start);
 
@@ -836,12 +846,8 @@ public class File
 				continue;
 			}
 			
-			// If the fragment starts after the byte we need, download the piece we still need
-			if(startbyte > currentPosition)
-			{
-				byte[] data = downloadFragment(currentPosition, Math.min(startbyte, end));
-				System.arraycopy(data, 0, output, (int)(currentPosition-start), data.length);
-				currentPosition += data.length;
+			if (startbyte > currentPosition) {
+				throw new Error("should not have gaps");
 			}
 
 			// Consume the fragment
@@ -854,11 +860,45 @@ public class File
 			currentPosition += copyEnd-copyStart;
 		}
 		
-		byte[] data = downloadFragment(currentPosition, end);
-		System.arraycopy(data, 0, output, (int)(currentPosition-start), data.length);
-		currentPosition += data.length;
-		
+		if (currentPosition < end) {
+			throw new Error("should not have gap at end");
+		}
+
 		return output;
+	}
+	
+	public void fillInGapsBetween(long start, long end) throws DatabaseConnectionException, IOException
+	{
+		// This method may not necessarily be holding a read lock
+		
+		List<DatabaseRow> fragments = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE LOCALID=? AND STARTBYTE < ? AND ENDBYTE > ? ORDER BY STARTBYTE ASC", getLocalId(), end, start);
+
+		long currentPosition = start;
+		for(DatabaseRow fragment : fragments)
+		{
+			int startbyte = fragment.getInteger("STARTBYTE");
+			int endbyte = fragment.getInteger("ENDBYTE");
+			String chunkMd5 = fragment.getString("CHUNKMD5");
+			java.io.File cachedChunkFile = File.getCacheFile(chunkMd5);
+			
+			if(!cachedChunkFile.exists() || cachedChunkFile.length() != endbyte-startbyte)
+			{
+				drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE CHUNKMD5=?", chunkMd5);
+				continue;
+			}
+			
+			// If the fragment starts after the byte we need, download the piece we still need
+			// TODO (smacke): If the gap is larger than 32 MiB, need to break it up into chunks
+			if(startbyte > currentPosition)
+			{
+				currentPosition += downloadFragment(currentPosition, Math.min(startbyte, end));
+			}
+
+			// Consume the fragment
+			currentPosition += Math.min(endbyte - currentPosition, end - currentPosition);
+		}
+		
+		currentPosition += downloadFragment(currentPosition, end);
 	}
 	
 	public UUID getLocalId() throws IOException
@@ -1255,6 +1295,7 @@ public class File
 //			throw new UnsupportedOperationException("Not yet implemented");
 			// no-op
 //			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
+			// need to kick off download
 			String googleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
 			long position = Long.parseLong(logEntry[1]);
 			long len = Long.parseLong(logEntry[2]);
