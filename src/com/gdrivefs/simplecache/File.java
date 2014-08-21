@@ -17,6 +17,8 @@ import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import javax.annotation.Nullable;
@@ -63,6 +65,8 @@ public class File
 	Timestamp modifiedTime;
 	DuplicateRejectingList<File> children;
 	DuplicateRejectingList<File> parents;
+	volatile Thread updater;
+	ExecutorService updaterService = Executors.newFixedThreadPool(1);
 	
 	File(Drive drive, String id)
 	{
@@ -658,6 +662,7 @@ public class File
     {
     	String chunkMd5 = DigestUtils.md5Hex(bytes);
 		acquireWrite();
+		System.out.println("doing a write!");
 		try
 		{
 			storeFragment(null, offset, bytes);
@@ -668,6 +673,7 @@ public class File
 		{
 			releaseWrite();
 		}
+		System.out.println("release write lock!");
 	}
 
     /**
@@ -812,8 +818,10 @@ public class File
 	static java.io.File getCacheFile(String chunkMd5)
 	{
 		java.io.File cacheFile = new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "cache");
-		for(byte c : chunkMd5.getBytes())
+		// TODO (smacke): why are we doing this again?
+		for(byte c : chunkMd5.getBytes()) {
 			cacheFile = new java.io.File(cacheFile, Character.toString((char) c));
+		}
 		cacheFile = new java.io.File(cacheFile, chunkMd5);
 		return cacheFile;
 	}
@@ -867,9 +875,10 @@ public class File
 		return output;
 	}
 	
-	public void fillInGapsBetween(long start, long end) throws DatabaseConnectionException, IOException
+	void fillInGapsBetween(long start, long end) throws DatabaseConnectionException, IOException
 	{
 		// This method may not necessarily be holding a read lock
+		// TODO (smacke): should it??
 		
 		List<DatabaseRow> fragments = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE LOCALID=? AND STARTBYTE < ? AND ENDBYTE > ? ORDER BY STARTBYTE ASC", getLocalId(), end, start);
 
@@ -1264,16 +1273,7 @@ public class File
 			file.acquireWrite();
 			try
 			{
-				String type = Files.probeContentType(Paths.get(getUploadFile(file).getAbsolutePath()));
-				FileContent mediaContent = new FileContent(type, getUploadFile(file));
-				
-				com.google.api.services.drive.model.File newRemoteDirectory = drive.getRemote().files().get(file.getId()).execute();
-				newRemoteDirectory.setMimeType(type);
-	
-				Date asof = new Date();
-				newRemoteDirectory = drive.getRemote().files().update(file.getId(), newRemoteDirectory, mediaContent).execute();
-	
-				file.refresh(newRemoteDirectory, asof);
+				file.uploadFileContentsToGoogle();
 			}
 			catch(SQLException e)
 			{
@@ -1296,10 +1296,10 @@ public class File
 			// no-op
 //			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
 			// need to kick off download
-			String googleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
-			long position = Long.parseLong(logEntry[1]);
-			long len = Long.parseLong(logEntry[2]);
-			byte[] data = FileUtils.readFileToByteArray(getCacheFile(logEntry[3]));
+			File file = drive.getFile(UUID.fromString(logEntry[0]));
+			// TODO (smacke): locking??
+			file.fillInGapsBetween(0, file.getSize());
+			file.pokeUpdateThread();
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
@@ -1430,6 +1430,78 @@ public class File
 		{
 			releaseWrite();
 		}
+	}
+	
+	void pokeUpdateThread() {
+		System.out.println("poker attempt acquire read");
+		acquireRead();
+		System.out.println("poker succeed acquire read");
+		try {
+			if (updater == null) {
+				updater = new Thread(new Runnable() {
+					@Override
+					public void run()
+					{
+						while (true) {
+							try
+							{
+								Thread.sleep(1000);
+								acquireWrite();
+								try
+								{
+									uploadFileContentsToGoogle();
+									// it is crucial that we have the write lock
+									// while setting updater to null
+									updater = null;
+								}
+								finally
+								{
+									releaseWrite();
+								}
+								break;
+							}
+							catch(InterruptedException | SQLException | IOException e)
+							{
+								// reset timer, retry
+								continue;
+							}
+
+						}
+					}
+				});
+				updaterService.execute(updater);
+				System.out.println("submission complete!");
+			} else {
+				updater.interrupt();
+				System.out.println("timer restarted");
+			}
+		}
+		finally {
+			releaseRead();
+			System.out.println("updater release read");
+		}
+	}
+	
+	void uploadFileContentsToGoogle() throws IOException, SQLException {
+		// TODO (smacke): make getUploadFile non-static
+		if (!drive.lock.writeLock().isHeldByCurrentThread()) {
+			// TODO (smacke): is it possible that we can do the slow network I/O
+			// without a write lock, as long as we make sure to hold one during
+			// refresh() (for DB stuff?)
+			throw new RuntimeException("uploading should happen with lock held");
+		}
+		File file = this;
+		String type = Files.probeContentType(Paths.get(getUploadFile(file).getAbsolutePath()));
+		FileContent mediaContent = new FileContent(type, getUploadFile(file));
+
+		com.google.api.services.drive.model.File newRemoteDirectory = drive.getRemote().files().get(getId()).execute();
+		newRemoteDirectory.setMimeType(type);
+
+		Date asof = new Date();
+		newRemoteDirectory = drive.getRemote().files().update(getId(), newRemoteDirectory, mediaContent).execute();
+
+		refresh(newRemoteDirectory, asof);
+		updater = null;
 	}
 	
 	@Override
