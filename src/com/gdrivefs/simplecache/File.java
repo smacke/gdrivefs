@@ -26,7 +26,6 @@ import javax.annotation.Nullable;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 
-import com.gdrivefs.simplecache.internal.DuplicateRejectingList;
 import com.google.api.client.http.FileContent;
 import com.google.api.client.http.GenericUrl;
 import com.google.api.client.http.HttpRequest;
@@ -51,7 +50,7 @@ public class File
 {
 	String googleFileId;
 	UUID localFileId;
-	Drive drive;
+	final Drive drive;
 	
 	// Cache (null indicates field must be fetched from db)
 	Long metadataAsOfDate;
@@ -63,19 +62,23 @@ public class File
 	String mimeType;
 	Long size;
 	Timestamp modifiedTime;
-	DuplicateRejectingList<File> children;
-	DuplicateRejectingList<File> parents;
+	DuplicateRejectingList children;
+	DuplicateRejectingList parents;
 	volatile Thread updater;
 	ExecutorService updaterService = Executors.newFixedThreadPool(1);
 	
 	File(Drive drive, String id)
 	{
+		if(drive == null) throw new NullPointerException("drive must not be null");
+		if(id == null) throw new NullPointerException("id must not be null");
 		this.drive = drive;
 		this.googleFileId = id;
 	}
 	
 	File(Drive drive, UUID id)
 	{
+		if(drive == null) throw new NullPointerException("drive must not be null");
+		if(id == null) throw new NullPointerException("id must not be null");
 		this.drive = drive;
 		this.localFileId = id;
 	}
@@ -276,12 +279,12 @@ public class File
 				if(childrenAsOfDate == null && metadataAsOfDate == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
 				if(googleFileId == null || childrenAsOfDate != null)
 				{
-					DuplicateRejectingList<File> children = drive.getDatabase().execute(new Transaction<DuplicateRejectingList<File>>()
+					DuplicateRejectingList children = drive.getDatabase().execute(new Transaction<DuplicateRejectingList>()
 					{
 						@Override
-						public DuplicateRejectingList<File> run(Database db) throws Throwable
+						public DuplicateRejectingList run(Database db) throws Throwable
 						{
-							DuplicateRejectingList<File> children = new DuplicateRejectingList<File>();
+							DuplicateRejectingList children = new DuplicateRejectingList();
 							List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", googleFileId);
 							for(String file : files)
 								children.add(drive.getCachedFile(file));
@@ -335,7 +338,7 @@ public class File
 			} while(lst.getPageToken() != null && lst.getPageToken().length() > 0);
 
 
-			DuplicateRejectingList<File> children = new DuplicateRejectingList<File>();
+			DuplicateRejectingList children = new DuplicateRejectingList();
 			for(com.google.api.services.drive.model.File child : googleChildren)
 				children.add(drive.getFile(child, childrenUpdateDate));
 			
@@ -955,7 +958,7 @@ public class File
     	drive.pokeLogPlayer();
     }
     
-    private void playOnParentsList(DuplicateRejectingList<File> parents, String command, String... logEntry) throws IOException
+    private void playOnParentsList(DuplicateRejectingList parents, String command, String... logEntry) throws IOException
     {
 		if(parents == null) return;
 		
@@ -1006,13 +1009,13 @@ public class File
 		else throw new Error("Unknown log entry: "+command+" "+Arrays.toString(logEntry));
     }
     
-	private void playLogOnParentsList(DuplicateRejectingList<File> parents) throws IOException
+	private void playLogOnParentsList(DuplicateRejectingList parents) throws IOException
 	{
 		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' OR COMMAND='mkdir' OR COMMAND='createFile' ORDER BY ID ASC"))
 			playOnParentsList(parents, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 	}
 	
-	private void playOnChildrenList(DuplicateRejectingList<File> children, String command, String... logEntry) throws IOException
+	private void playOnChildrenList(DuplicateRejectingList children, String command, String... logEntry) throws IOException
 	{
 		if(children == null) return;
 
@@ -1074,7 +1077,7 @@ public class File
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
     
-	private void playLogOnChildrenList(DuplicateRejectingList<File> children) throws IOException
+	private void playLogOnChildrenList(DuplicateRejectingList children) throws IOException
 	{
 		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' OR COMMAND='mkdir' OR COMMAND='createFile' OR COMMAND='trash' ORDER BY ID ASC"))
 			playOnChildrenList(children, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
@@ -1321,7 +1324,7 @@ public class File
 			if(googleFileId == null || parentsAsOfDate != null)
 			{
 				// Fetch from database
-				DuplicateRejectingList<File> parents = new DuplicateRejectingList<File>();
+				DuplicateRejectingList parents = new DuplicateRejectingList();
 				List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE CHILD=?", googleFileId);
 				
 				for(String file : files) parents.add(drive.getCachedFile(file));
@@ -1343,7 +1346,7 @@ public class File
 	{
 		if(parents != null && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Must have write lock");
 		if(parents == null && !drive.lock.isWriteLockedByCurrentThread() && drive.lock.getReadLockCount() == 0) throw new Error("Must have read or write lock");
-		DuplicateRejectingList<File> parents = new DuplicateRejectingList<File>();
+		DuplicateRejectingList parents = new DuplicateRejectingList();
 		for(ParentReference parent : drive.getRemote().files().get(googleFileId).execute().getParents())
 		{
 			int rowsInDb = drive.getDatabase().getInteger("SELECT COUNT(*) FROM FILES WHERE ID=?", parent.getId());

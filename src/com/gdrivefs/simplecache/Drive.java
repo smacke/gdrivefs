@@ -101,6 +101,7 @@ public class Drive implements Closeable
 	
 	Database getDatabase()
 	{
+		if(db == null) throw new IllegalStateException("Can not fetch database connection after drive is closed");
 		return db;
 	}
 	
