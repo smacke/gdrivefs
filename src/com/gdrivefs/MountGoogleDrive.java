@@ -5,6 +5,12 @@ import java.security.GeneralSecurityException;
 import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 
+import org.apache.commons.cli.BasicParser;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
+
 import net.fusejna.FuseException;
 import net.fusejna.FuseJna;
 
@@ -21,19 +27,25 @@ import com.google.api.services.drive.DriveScopes;
 
 public class MountGoogleDrive
 {
-	public static void main(final String... args) throws FuseException, GeneralSecurityException, IOException, InterruptedException
+	public static void main(final String... args) throws FuseException, GeneralSecurityException, IOException, InterruptedException, ParseException
 	{
+		Options options = new Options();
+		options.addOption("t", true, "Filesystem type (always gdrivefs; ignored)");
+		
+		CommandLineParser parser = new BasicParser();
+		CommandLine cmd = parser.parse(options, args);
+		
 		String email = null;
 		java.io.File mountPoint = null;
 
-		if(args.length == 1)
+		if(cmd.getArgs().length == 1)
 		{
-			mountPoint = new java.io.File(args[0]);
+			mountPoint = new java.io.File(cmd.getArgs()[0]);
 		}
-		if (args.length == 2)
+		if(cmd.getArgs().length == 2)
 		{
 			email = args[0];
-			mountPoint = new java.io.File(args[1]);
+			mountPoint = new java.io.File(cmd.getArgs()[1]);
 		}
 
 		attemptInstall(false);
