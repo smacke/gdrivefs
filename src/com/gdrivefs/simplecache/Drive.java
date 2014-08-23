@@ -4,7 +4,6 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.sql.SQLException;
 import java.util.Date;
-import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -13,7 +12,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import com.gdrivefs.simplecache.internal.DriveExecutorService;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.services.drive.model.Property;
-import com.google.common.collect.Maps;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.MemoryDatabase;
@@ -32,10 +33,8 @@ public class Drive implements Closeable
     private HttpTransport transport;
 	private com.google.api.services.drive.Drive remote;
 	
-	// Drive-wide singularity cache
-	// TODO: Use soft references and clear the map when references are dropped
-	Map<String, File> googleFiles = Maps.newConcurrentMap();
-	Map<UUID, File> unsyncedFiles = Maps.newConcurrentMap();
+	LoadingCache<String, File> googleFiles;
+	LoadingCache<UUID, File> unsyncedFiles;
 
 	DriveExecutorService logPlayer = new DriveExecutorService();
 	DriveExecutorService fileUpdateWorker = new DriveExecutorService(new ThreadFactoryBuilder().setDaemon(true).build());
@@ -77,6 +76,21 @@ public class Drive implements Closeable
 		new java.io.File(home, "cache").mkdirs();
 		new java.io.File(home, "uploads").mkdirs();
 		new java.io.File(home, "auth").mkdirs();
+		
+		googleFiles = CacheBuilder.newBuilder().softValues().build(new CacheLoader<String, File>(){@Override
+		public File load(String id) throws Exception
+		{
+			// TODO Auto-generated method stub
+			return null;
+		}});
+		
+		unsyncedFiles = CacheBuilder.newBuilder().softValues().build(new CacheLoader<UUID, File>(){@Override
+			public File load(UUID id) throws Exception
+			{
+				// TODO Auto-generated method stub
+				return null;
+			}
+		});
 	}
 	
 	com.google.api.services.drive.Drive getRemote()
@@ -111,7 +125,7 @@ public class Drive implements Closeable
 					getDatabase().execute("INSERT INTO DRIVES(ROOT) VALUES(?)", rootId);
 				}
 			
-			File rootFile = googleFiles.get(rootId);
+			File rootFile = googleFiles.getIfPresent(rootId);
 			if(rootFile != null) return rootFile;
 			rootFile = new File(this, rootId);
 			googleFiles.put(rootId, rootFile);
@@ -130,16 +144,17 @@ public class Drive implements Closeable
 		{
 			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
 			
-			File file = googleFiles.get(remoteFile.getId());
+			File file = googleFiles.getIfPresent(remoteFile.getId());
 			if(file == null && remoteFile.getProperties() != null)
 				for(Property property : remoteFile.getProperties())
 				{
 					if("com.gdrivefs.id".equals(property.getKey()))
 					{
 						UUID localFileId = UUID.fromString(property.getValue());
-						if(unsyncedFiles.containsKey(localFileId))
+						file = unsyncedFiles.getIfPresent(localFileId);
+						if(file != null)
 						{
-							file = unsyncedFiles.remove(localFileId);
+							unsyncedFiles.invalidate(localFileId);
 							googleFiles.put(remoteFile.getId(), file);
 						}
 					}
@@ -148,9 +163,10 @@ public class Drive implements Closeable
 			{
 				
 				UUID localFileId = UUID.fromString(remoteFile.getDescription().substring("gdrivefsid=".length()));
-				if(unsyncedFiles.containsKey(localFileId))
+				file = unsyncedFiles.getIfPresent(localFileId);
+				if(file != null)
 				{
-					file = unsyncedFiles.remove(localFileId);
+					unsyncedFiles.invalidate(localFileId);
 					googleFiles.put(remoteFile.getId(), file);
 				}
 			}
@@ -218,7 +234,7 @@ public class Drive implements Closeable
 		try
 		{
 			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
-			File file = googleFiles.get(googleId);
+			File file = googleFiles.getIfPresent(googleId);
 			if(file != null) return file;
 			file = new File(this, googleId);
 			googleFiles.put(googleId, file);
@@ -237,12 +253,17 @@ public class Drive implements Closeable
 		{
 			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
 			String googleId = File.getGoogleId(this, id);
-			if(googleId != null && googleFiles.containsKey(googleId)) return googleFiles.get(googleId);
+			
+			if(googleId != null)
+			{
+				File file = googleFiles.getIfPresent(googleId);
+				if(file != null) return file;
+			}
 			
 			if(googleId == null)
 			{
 				// Get unsynced file or create a new one
-				File file = unsyncedFiles.get(id);
+				File file = unsyncedFiles.getIfPresent(id);
 				if(file != null) return file;
 				file = new File(this, id);
 				unsyncedFiles.put(id, file);
@@ -250,13 +271,13 @@ public class Drive implements Closeable
 			}
 			
 			// Get the unsynced file, move it to the google list, return file
-			File file = unsyncedFiles.get(id);
+			File file = unsyncedFiles.getIfPresent(id);
 			if(file == null)
 			{
 				file = new File(this, googleId);
 			}
 			googleFiles.put(googleId, file);
-			unsyncedFiles.remove(id);
+			unsyncedFiles.invalidate(id);
 			return file;
 		}
 		finally
