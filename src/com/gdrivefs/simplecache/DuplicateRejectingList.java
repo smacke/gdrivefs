@@ -252,6 +252,7 @@ class FileReference
 		return reference;
 	}
 	
+	@Override
 	public boolean equals(Object obj)
 	{
 		if(!(obj instanceof FileReference)) return false;

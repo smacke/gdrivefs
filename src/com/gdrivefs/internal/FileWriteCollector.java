@@ -39,7 +39,6 @@ public class FileWriteCollector
 		currentPosition += length;
 	}
 	
-	
 	public java.io.File getFile() throws IOException
 	{
 		delegate.close();
@@ -53,8 +52,6 @@ public class FileWriteCollector
 	}
 	
 	private void flushFragmentToDb(long start, long stop) throws IOException {
-		// TODO (smacke): need to overwrite overlapping fragments which are out-of-date
-		// Probably put this in File#storeFragment()
 		if (start > stop) {
 			throw new IllegalArgumentException(start + ", " + stop);
 		}
@@ -66,6 +63,6 @@ public class FileWriteCollector
 		byte[] fragment = new byte[len];
 		delegate.seek(position);
 		delegate.read(fragment, 0, len);
-		cachedFile.write(fragment, position);
+		cachedFile.write(fragment, position, diskFile);
 	}
 }

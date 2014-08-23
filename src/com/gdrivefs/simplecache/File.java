@@ -20,6 +20,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import javax.annotation.Nullable;
 
@@ -66,6 +67,7 @@ public class File
 	DuplicateRejectingList parents;
 	volatile Thread updater;
 	ExecutorService updaterService = Executors.newFixedThreadPool(1);
+	final AtomicReference<java.io.File> fileOnDisk = new AtomicReference<>();
 	
 	File(Drive drive, String id)
 	{
@@ -86,7 +88,12 @@ public class File
 	/** Reads basic metadata from the cache, throwing an exception if the file metadata isn't in our database **/
 	private void readBasicMetadata() throws IOException
 	{
-		if(googleFileId == null) googleFileId = getGoogleId(drive, localFileId);
+		if(googleFileId == null) {
+			if (localFileId == null) {
+				throw new Error("either googleFileId or localFileId must be non-null");
+			}
+			googleFileId = getGoogleId(drive, localFileId);
+		}
 		
 		if(googleFileId != null)
 		{
@@ -420,7 +427,7 @@ public class File
 		
 		GregorianCalendar nextUpdateTimestamp = new GregorianCalendar();
 		nextUpdateTimestamp.add(Calendar.DAY_OF_YEAR, 1);
-
+		
 		drive.getDatabase().execute(new Transaction<Void>()
 		{
 			@Override
@@ -637,6 +644,7 @@ public class File
 		acquireRead();
 		try
 		{
+			System.out.printf("read %d bytes at offset %d for file %s\n", size, offset, getTitle());
 			byte[] data = getBytesByAnyMeans(offset, offset + size);
 			if(data.length != size) throw new Error("expected: " + size + " actual: " + data.length + " " + new String(data));
 			return data;
@@ -650,6 +658,7 @@ public class File
     public void truncate(final long offset) throws DatabaseConnectionException, IOException
     {
 		acquireWrite();
+		System.out.println("truncate for " + getTitle());
 		try
 		{
 			playOnDatabase("truncate", this.getLocalId().toString(), Long.toString(offset), "null");
@@ -661,22 +670,21 @@ public class File
 		}
 	}
 	
-    public void write(byte[] bytes, final long offset) throws DatabaseConnectionException, IOException
+    public void write(byte[] bytes, final long offset, java.io.File diskFile) throws DatabaseConnectionException, IOException
     {
     	String chunkMd5 = DigestUtils.md5Hex(bytes);
 		acquireWrite();
-		System.out.println("doing a write!");
 		try
 		{
+			System.out.printf("write %d bytes at offset %d for file %s\n", bytes.length, offset, getTitle());
 			storeFragment(null, offset, bytes);
-			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
-			playOnMetadata("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
+			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null", diskFile.getAbsolutePath());
+			playOnMetadata("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null", diskFile.getAbsolutePath());
 		}
 		finally
 		{
 			releaseWrite();
 		}
-		System.out.println("release write lock!");
 	}
 
     /**
@@ -688,7 +696,7 @@ public class File
      */
     protected int downloadFragment(long startPosition, long endPosition) throws IOException
 	{
-    	System.out.println("Downloading "+fileMd5+" "+startPosition+" "+endPosition);
+    	System.out.println("Downloading for " + getTitle() + " " +fileMd5+" "+startPosition+" "+endPosition);
 		if(startPosition > endPosition) throw new IllegalArgumentException("startPosition (" + startPosition + ") must not be greater than endPosition (" + endPosition + ")");
 		if(startPosition > endPosition) throw new IllegalArgumentException("startPosition (" + startPosition + ") must not be greater than endPosition (" + endPosition + ")");
 		if(startPosition == endPosition) return 0;
@@ -723,98 +731,105 @@ public class File
     
     protected byte[] readFragment(String fileMd5, long startPosition, long endPosition, String chunkMd5) throws IOException
     {
-            if(startPosition >= endPosition) throw new Error("EndPosition ("+endPosition+") should not be greater than StartPosition ("+startPosition+")");
-            RandomAccessFile file = new RandomAccessFile(new java.io.File("/home/kyle/.googlefs/cache/"+fileMd5), "r");
-            try
-            {
-                    file.seek(startPosition);
-                    byte[] data = new byte[(int)(endPosition-startPosition)];
-                    file.read(data);
-                    
-                    // If the fragment was found and is correct, return it
-                    if(DigestUtils.md5Hex(data).equals(chunkMd5)) return data;
-                    
-                    // Something went horribly wrong, delete the fragment record and return not-found
-                    drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE fileMd5=? AND chunkMd5=?", fileMd5, chunkMd5);
-                    throw new NoSuchElementException("Could not load chunk "+fileMd5+"."+chunkMd5+"("+startPosition+"-"+endPosition+")");
-            }
-            finally
-            {
-                    file.close();
-            }
+    	if(startPosition >= endPosition) throw new Error("EndPosition ("+endPosition+") should not be greater than StartPosition ("+startPosition+")");
+    	RandomAccessFile file = new RandomAccessFile(new java.io.File("/home/kyle/.googlefs/cache/"+fileMd5), "r");
+    	try
+    	{
+    		file.seek(startPosition);
+    		byte[] data = new byte[(int)(endPosition-startPosition)];
+    		file.read(data);
+
+    		// If the fragment was found and is correct, return it
+    		if(DigestUtils.md5Hex(data).equals(chunkMd5)) return data;
+
+    		// Something went horribly wrong, delete the fragment record and return not-found
+    		drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE fileMd5=? AND chunkMd5=?", fileMd5, chunkMd5);
+    		throw new NoSuchElementException("Could not load chunk "+fileMd5+"."+chunkMd5+"("+startPosition+"-"+endPosition+")");
+    	}
+    	finally
+    	{
+    		file.close();
+    	}
     }
-    
 
+
+    /**
+     * Ideally, this method should only do destructive database ops when write-lock protected.
+     * E.g. anything inserted during a download should not overlap any existing fragments.
+     * 
+     * @param fileMd5
+     * @param fragmentStartByte
+     * @param fragment
+     * @throws IOException
+     */
     private void storeFragment(
-            @Nullable String fileMd5, // null file md5 indicates that this op is coming in locally and is most up-to-date
-            long fragmentStartByte,
-            byte[] fragment) throws IOException {
-        long start = fragmentStartByte;
-        long end = fragmentStartByte + fragment.length;
-        // get overlapping fragments
-        // sort by startbyte asc
-        // then endbyte desc
-        // this allows for a slight optimization during merging --
-        // we use the fragment that spans more data when possible,
-        // if two fragments start in the same place (fewer I/O calls)
-        List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE (ENDBYTE > ? AND ENDBYTE <= ?) OR (STARTBYTE >= ? AND STARTBYTE < ?) ORDER BY STARTBYTE ASC, ENDBYTE DESC", start, end, start, end);
+    		@Nullable String fileMd5, // null file md5 indicates that this op is coming in locally and is most up-to-date
+    		long fragmentStartByte,
+    		byte[] fragment) throws IOException {
+    	long start = fragmentStartByte;
+    	long end = fragmentStartByte + fragment.length;
+    	System.out.println("store fragment for " + getTitle() + ": start=" + start + ", end=" + end);
+    	// get overlapping fragments
+    	// sort by startbyte asc
+    	// then endbyte desc
+    	// this allows for a slight optimization during merging --
+    	// we use the fragment that spans more data when possible,
+    	// if two fragments start in the same place (fewer I/O calls)
+    	List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE LOCALID=? AND ((ENDBYTE > ? AND ENDBYTE <= ?) OR (STARTBYTE >= ? AND STARTBYTE < ?) OR (STARTBYTE <= ? AND ENDBYTE >= ?)) ORDER BY STARTBYTE ASC, ENDBYTE DESC", getLocalId().toString(), start, end, start, end, start, end);
 
-        long globalStartByte = fragmentStartByte;
-        long globalEndByte = fragmentStartByte + fragment.length;
-        for (DatabaseRow row : rows) {
-            globalEndByte = Math.max(globalEndByte, row.getInteger("ENDBYTE"));
-        }
+    	long globalStartByte = fragmentStartByte;
+    	long globalEndByte = fragmentStartByte + fragment.length;
+    	for (DatabaseRow row : rows) {
+    		globalEndByte = Math.max(globalEndByte, row.getInteger("ENDBYTE"));
+    	}
 
-        byte[] merged;
-        if (rows.size() > 0) {
-            globalStartByte = Math.min(globalStartByte, rows.get(0).getInteger("STARTBYTE"));
-            merged = new byte[(int)(globalEndByte - globalStartByte)];
+    	byte[] merged;
+    	if (rows.size() > 0) {
+    		globalStartByte = Math.min(globalStartByte, rows.get(0).getInteger("STARTBYTE"));
+    		merged = new byte[(int)(globalEndByte - globalStartByte)];
 
-            System.arraycopy(fragment, 0, merged, (int)(fragmentStartByte-globalStartByte), fragment.length);
+    		System.arraycopy(fragment, 0, merged, (int)(fragmentStartByte-globalStartByte), fragment.length);
 
-            long position = globalStartByte;
+    		long position = globalStartByte;
 
-            // skip the new fragment; we've already done an arraycopy
-            if (position == fragmentStartByte) {
-                position = fragmentStartByte + fragment.length;
-            }
-            for (int chunk=0; chunk<rows.size(); chunk++) {
-                long chunkEnd = rows.get(chunk).getInteger("ENDBYTE");
-                if (position >= chunkEnd) {
-                    continue;
-                }
-                if (position < chunkEnd) {
-                    String chunkMd5 = rows.get(chunk).getString("CHUNKMD5");
-                    int chunkStart = rows.get(chunk).getInteger("STARTBYTE");
-                    if (position < chunkStart) {
-                    	throw new Error("inexplicable gap");
-                    }
-                    byte[] fileBytes = FileUtils.readFileToByteArray(getCacheFile(chunkMd5));
-                    while (position < chunkEnd) {
-                        merged[(int)(position-globalStartByte)] = fileBytes[(int)(position-chunkStart)];
-                        position++;
-                        // skip the new fragment; we've already done an arraycopy
-                        if (position == fragmentStartByte) {
-                            position = fragmentStartByte + fragment.length;
-                        }
-                    }
-//                    // TODO (smacke): is this necessary to delete old caches? I think probably not.
-//                    // Plus this may cause race conditions with concurrent reads from google.
-//                    java.io.File chunkFile = getCacheFile(chunkMd5);
-//                    if (chunkFile.exists()) {
-//                        chunkFile.delete();
-//                    }
-                }
-            }
+    		// skip the new fragment; we've already done an arraycopy
+    		if (position == fragmentStartByte) {
+    			position = fragmentStartByte + fragment.length;
+    		}
+    		for (int chunk=0; chunk<rows.size(); chunk++) {
+    			long chunkEnd = rows.get(chunk).getInteger("ENDBYTE");
+    			if (position >= chunkEnd) {
+    				continue;
+    			}
+    			String chunkMd5 = rows.get(chunk).getString("CHUNKMD5");
+    			int chunkStart = rows.get(chunk).getInteger("STARTBYTE");
+    			if (position < chunkStart) {
+    				throw new Error("inexplicable gap");
+    			}
+    			byte[] fileBytes = FileUtils.readFileToByteArray(getCacheFile(chunkMd5));
+    			while (position < chunkEnd) {
+    				merged[(int)(position-globalStartByte)] = fileBytes[(int)(position-chunkStart)];
+    				position++;
+    				// skip the new fragment; we've already done an arraycopy
+    				if (position == fragmentStartByte) {
+    					position = fragmentStartByte + fragment.length;
+    				}
+    			}
+    			// TODO (smacke): delete empty directories up the chain as well?
+    			java.io.File chunkFile = getCacheFile(chunkMd5);
+    			if (chunkFile.exists()) {
+    				chunkFile.delete();
+    			}
+    		}
 
-            drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE (ENDBYTE > ? AND ENDBYTE <= ?) OR (STARTBYTE >= ? AND STARTBYTE < ?)", start, end, start, end);
-        } else {
-            merged = fragment;
-        }
-        String chunkMd5 = DigestUtils.md5Hex(merged);
-        FileUtils.writeByteArrayToFile(getCacheFile(chunkMd5), merged);
-        drive.getDatabase().execute("INSERT INTO FRAGMENTS(LOCALID, FILEMD5, CHUNKMD5, STARTBYTE, ENDBYTE) VALUES(?,?,?,?,?)",
-                getLocalId(), fileMd5, chunkMd5, globalStartByte, globalStartByte + merged.length);
+    		drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE LOCALID=? AND ((ENDBYTE > ? AND ENDBYTE <= ?) OR (STARTBYTE >= ? AND STARTBYTE < ?) OR (STARTBYTE <= ? AND ENDBYTE >= ?))", getLocalId().toString(), start, end, start, end, start, end);
+    	} else {
+    		merged = fragment;
+    	}
+    	String chunkMd5 = DigestUtils.md5Hex(merged);
+    	FileUtils.writeByteArrayToFile(getCacheFile(chunkMd5), merged);
+    	drive.getDatabase().execute("INSERT INTO FRAGMENTS(LOCALID, FILEMD5, CHUNKMD5, STARTBYTE, ENDBYTE) VALUES(?,?,?,?,?)",
+    			getLocalId(), fileMd5, chunkMd5, globalStartByte, globalStartByte + merged.length);
 
     }
     
@@ -869,12 +884,19 @@ public class File
 			System.out.println("outputlength"+output.length+" "+"fragmentlength"+FileUtils.readFileToByteArray(cachedChunkFile).length);
 			System.arraycopy(FileUtils.readFileToByteArray(cachedChunkFile), copyStart, output, (int)(currentPosition-start), copyEnd-copyStart);
 			currentPosition += copyEnd-copyStart;
+			
+			if (currentPosition >= end) {
+				if (currentPosition > end) {
+					throw new Error("should not be reading past end");
+				}
+				break;
+			}
 		}
 		
 		if (currentPosition < end) {
-			throw new Error("should not have gap at end");
+			throw new Error("unexpected gap at end");
 		}
-
+		
 		return output;
 	}
 	
@@ -903,6 +925,7 @@ public class File
 			// TODO (smacke): If the gap is larger than 32 MiB, need to break it up into chunks
 			if(startbyte > currentPosition)
 			{
+				System.out.println("had to fill in gap for file " + getLocalId());
 				currentPosition += downloadFragment(currentPosition, Math.min(startbyte, end));
 			}
 
@@ -1132,16 +1155,19 @@ public class File
 		}
 		else if("update".equals(command))
 		{
+			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
 			size = Long.parseLong(logEntry[1]);
 			fileMd5 = "null".equals(logEntry[2]) ? null : logEntry[2];
 		}
 		else if("truncate".equals(command))
 		{
-			size = Long.parseLong(logEntry[1]);
+			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
+			size = Math.min(size, Long.parseLong(logEntry[1]));
 			fileMd5 = "null".equals(logEntry[2]) ? null : logEntry[2];
 		}
 		else if("write".equals(command))
 		{
+			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
 			long offset = Long.parseLong(logEntry[1]);
 			long length = Long.parseLong(logEntry[2]);
 			if (size == null) { // N.B. (smacke): can't call getSize() or we will infinite recurse
@@ -1150,7 +1176,6 @@ public class File
 				size = Math.max(size, offset+length);
 			}
 			fileMd5 = "null".equals(logEntry[4]) ? null : logEntry[4];
-			System.out.println("write set md5: "+fileMd5);
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
@@ -1299,10 +1324,11 @@ public class File
 			// no-op
 //			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
 			// need to kick off download
-			File file = drive.getFile(UUID.fromString(logEntry[0]));
+//			File file = drive.getFile(UUID.fromString(logEntry[0]));
+//			java.io.File diskFile = new java.io.File(logEntry[5]);
 			// TODO (smacke): locking??
-			file.fillInGapsBetween(0, file.getSize());
-			file.pokeUpdateThread();
+//			file.fillInGapsBetween(0, file.getSize());
+//			file.pokeUpdateThread(diskFile);
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
@@ -1428,6 +1454,7 @@ public class File
 				try { parent.playOnChildrenList(parent.children, "trash", logEntry); }
 				finally { parent.releaseWrite(); }
 			}
+			dropFragmentsFromDb();
 		}
 		finally
 		{
@@ -1435,9 +1462,10 @@ public class File
 		}
 	}
 	
-	void pokeUpdateThread() {
+	void pokeUpdateThread(java.io.File diskFile) {
 		System.out.println("poker attempt acquire read");
 		acquireRead();
+		fileOnDisk.set(diskFile);
 		System.out.println("poker succeed acquire read");
 		try {
 			if (updater == null) {
@@ -1449,13 +1477,14 @@ public class File
 							try
 							{
 								Thread.sleep(1000);
+								FileUtils.copyFile(fileOnDisk.get(), getUploadFile(File.this));
 								acquireWrite();
 								try
 								{
-									uploadFileContentsToGoogle();
+									File.this.uploadFileContentsToGoogle();
 									// it is crucial that we have the write lock
 									// while setting updater to null
-									updater = null;
+									File.this.updater = null;
 								}
 								finally
 								{
@@ -1466,6 +1495,7 @@ public class File
 							catch(InterruptedException | SQLException | IOException e)
 							{
 								// reset timer, retry
+								e.printStackTrace();
 								continue;
 							}
 
@@ -1493,6 +1523,7 @@ public class File
 			// refresh() (for DB stuff?)
 			throw new RuntimeException("uploading should happen with lock held");
 		}
+		System.out.println("uploading contents of " + getTitle() + " to google");
 		File file = this;
 		String type = Files.probeContentType(Paths.get(getUploadFile(file).getAbsolutePath()));
 		FileContent mediaContent = new FileContent(type, getUploadFile(file));
@@ -1504,7 +1535,16 @@ public class File
 		newRemoteDirectory = drive.getRemote().files().update(getId(), newRemoteDirectory, mediaContent).execute();
 
 		refresh(newRemoteDirectory, asof);
-		updater = null;
+	}
+	
+	void dropFragmentsFromDb() throws DatabaseConnectionException, IOException {
+		acquireWrite();
+		try {
+			System.out.println("dropped fragments for file " + title);
+			drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE LOCALID=?", getLocalId());
+		} finally {
+			releaseWrite();
+		}
 	}
 	
 	@Override

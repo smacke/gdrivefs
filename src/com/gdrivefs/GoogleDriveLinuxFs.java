@@ -10,7 +10,6 @@ import java.util.concurrent.TimeUnit;
 
 import net.fusejna.DirectoryFiller;
 import net.fusejna.ErrorCodes;
-import net.fusejna.FuseException;
 import net.fusejna.FuseJna;
 import net.fusejna.StructFuseFileInfo.FileInfoWrapper;
 import net.fusejna.StructStat.StatWrapper;
@@ -195,6 +194,13 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 
 			boolean isGoogleDoc = f.getMimeType().startsWith("application/vnd.google-apps.");
 			if(isGoogleDoc) return -ErrorCodes.EMEDIUMTYPE();
+			
+			FileWriteCollector collector = openFiles.get(path);
+			if (collector != null) {
+				// need to flush to the simplecache, so that
+				// the most up-to-date fragment is available for reads
+				collector.flushCurrentFragmentToDb();
+			}
 
 			byte[] bytes = f.read(Math.min(size, f.getSize()-offset), offset);
 			buffer.put(bytes);
@@ -264,7 +270,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	}
 
 	@Override
-	public int rename(final String oldPath, final String newPath)
+	public synchronized int rename(final String oldPath, final String newPath)
 	{
 		try
 		{
@@ -348,6 +354,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 			else
 			{
 				// TODO: Decide what to do if parent is in trash, maybe add drive root as parent?
+				System.out.println("unlink " + file.getTitle());
 				file.trash();
 			}
 			return 0;
@@ -407,6 +414,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		try
 		{
 			if(collector == null) return 0;
+			System.out.println("flush");
 			collector.flushCurrentFragmentToDb();
 			getCachedPath(path).update(collector.getFile());
 			openFiles.remove(path);
