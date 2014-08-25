@@ -45,7 +45,12 @@ public class Drive implements Closeable
 	
 	public Drive(com.google.api.services.drive.Drive remote, HttpTransport transport)
 	{
-		this.db = new MemoryDatabase();
+		this(remote, transport, createMemoryDatabase());
+	}
+	
+	private static Database createMemoryDatabase()
+	{
+		MemoryDatabase db = new MemoryDatabase();
 		
 		db.execute("CREATE TABLE DRIVES(ROOT VARCHAR(255))");
 		db.execute("CREATE TABLE FILES(ID VARCHAR(255), LOCALID CHAR(36) NOT NULL, TITLE VARCHAR(255) NOT NULL, MIMETYPE VARCHAR(255) NOT NULL, MD5HEX CHAR(32), SIZE BIGINT, MTIME TIMESTAMP, DOWNLOADURL CLOB, METADATAREFRESHED TIMESTAMP, CHILDRENREFRESHED TIMESTAMP, PARENTSREFRESHED TIMESTAMP)");
@@ -68,9 +73,15 @@ public class Drive implements Closeable
 		db.execute("CREATE UNIQUE INDEX FILE_ID ON FILES(ID)");
 		db.execute("CREATE UNIQUE INDEX RELATIONSHIPS_CHILD_PARENT ON RELATIONSHIPS(CHILD, PARENT)");
 //		db.execute("CREATE INDEX FRAGMENTS_FILEMD5 ON FRAGMENTS(FILEMD5)");
-
+		
+		return db;
+	}
+	
+	public Drive(com.google.api.services.drive.Drive remote, HttpTransport transport, Database db)
+	{
 		this.remote = remote;
 		this.transport = transport;
+		this.db = db;
 
 		java.io.File home = new java.io.File(System.getProperty("user.home"), ".googlefs");
 		new java.io.File(home, "cache").mkdirs();
