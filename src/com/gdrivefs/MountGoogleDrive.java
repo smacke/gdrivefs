@@ -15,6 +15,7 @@ import net.fusejna.FuseException;
 import net.fusejna.FuseJna;
 
 import com.google.api.client.auth.oauth2.Credential;
+import com.google.api.client.auth.oauth2.StoredCredential;
 import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
 import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
@@ -22,7 +23,9 @@ import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.client.json.JsonFactory;
 import com.google.api.client.json.jackson2.JacksonFactory;
+import com.google.api.client.util.store.DataStore;
 import com.google.api.client.util.store.FileDataStoreFactory;
+import com.google.api.client.util.store.MemoryDataStoreFactory;
 import com.google.api.services.drive.DriveScopes;
 
 public class MountGoogleDrive
@@ -61,13 +64,31 @@ public class MountGoogleDrive
 
 		HttpTransport httpTransport = GoogleNetHttpTransport.newTrustedTransport();
 
-		FileDataStoreFactory dataStoreFactory = new FileDataStoreFactory(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "auth"));
+		java.io.File authDirectory = new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "auth");
+		
+		if(email != null) new java.io.File(authDirectory, email).mkdirs();
+		
+		// Create data store for user's credentials
+		DataStore<StoredCredential> credentialDataStore = new MemoryDataStoreFactory().getDataStore("StoredCredential");
+		
+		// If we know the user's email, attempt to load their credentials
+		if(email != null)
+		{
+			DataStore<StoredCredential> fileStore = new FileDataStoreFactory(new java.io.File(authDirectory, email)).getDataStore("StoredCredential");
+			for(String key : fileStore.keySet()) credentialDataStore.set(key, fileStore.get(key));
+		}
+		
 		JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
-		GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(httpTransport, JSON_FACTORY, "930897891601-4mbqrmuu5osvk7j3vlkv8k59liot620f.apps.googleusercontent.com", "v18DcOoqIvmVgPVtisCijpTV", Collections.singleton(DriveScopes.DRIVE)).setDataStoreFactory(dataStoreFactory).build();
+		GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(httpTransport, JSON_FACTORY, "930897891601-4mbqrmuu5osvk7j3vlkv8k59liot620f.apps.googleusercontent.com", "v18DcOoqIvmVgPVtisCijpTV", Collections.singleton(DriveScopes.DRIVE)).setCredentialDataStore(credentialDataStore).build();
 		Credential credential = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
 		
 		com.google.api.services.drive.Drive remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
 		com.gdrivefs.simplecache.Drive drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
+		
+		// Save the credentials using the account that the user ultimately authenticated with
+		email = remote.about().get().execute().getUser().getEmailAddress();
+		DataStore<StoredCredential> fileStore = new FileDataStoreFactory(new java.io.File(authDirectory, email)).getDataStore("StoredCredential");
+		for(String key : credentialDataStore.keySet()) fileStore.set(key, credentialDataStore.get(key));
 		
 		GoogleDriveLinuxFs filesystem = null;
 		
