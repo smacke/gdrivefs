@@ -1,15 +1,26 @@
 package com.gdrivefs;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.GeneralSecurityException;
 import java.util.Collections;
+import java.util.Enumeration;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 
 import org.apache.commons.cli.BasicParser;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.IOUtils;
 
 import net.fusejna.FuseException;
 import net.fusejna.FuseJna;
@@ -53,7 +64,7 @@ public class MountGoogleDrive
 
 		attemptInstall(false);
 
-		FuseJna.unmount(mountPoint);
+		if(mountPoint != null) FuseJna.unmount(mountPoint);
 		
 		String errors = checkArguments(email, mountPoint);
 		if(errors != null)
@@ -145,12 +156,72 @@ public class MountGoogleDrive
 	{
 		try
 		{
-			if(new java.io.File("/sbin/mount.gdrive").exists() || new java.io.File("/sbin/mount.gdrive").exists()) return;
-			// TODO: attempt to install into mount command.
+			File gdriveJar = findJar();
+			if(gdriveJar == null) throw new IOException("Could not find jar!");
+			FileUtils.copyFile(gdriveJar, new java.io.File("/usr/lib/gdrivefs.jar"));
+			FileUtils.writeStringToFile(new java.io.File("/sbin/mount.gdrive"), "#!/bin/sh\n\nsu $SUDO_USER -c \"gdrivefs $1 $2\" &");
+			FileUtils.writeStringToFile(new java.io.File("/sbin/mount.gdrivefs"), "#!/bin/sh\n\nsu $SUDO_USER -c \"gdrivefs $1 $2\" &");
+			FileUtils.writeStringToFile(new java.io.File("/usr/bin/gdrive"), "#!/bin/sh\n\njava -Djna.nosys=true -jar /usr/lib/gdrivefs.jar $@");
+			FileUtils.writeStringToFile(new java.io.File("/usr/bin/gdrivefs"), "#!/bin/sh\n\njava -Djna.nosys=true -jar /usr/lib/gdrivefs.jar $@");
+			
+	        Set<PosixFilePermission> executablePermissions = new HashSet<PosixFilePermission>();
+	        executablePermissions.add(PosixFilePermission.OWNER_READ);
+	        executablePermissions.add(PosixFilePermission.OWNER_EXECUTE);
+	        executablePermissions.add(PosixFilePermission.GROUP_READ);
+	        executablePermissions.add(PosixFilePermission.GROUP_EXECUTE);
+	        executablePermissions.add(PosixFilePermission.OTHERS_READ);
+	        executablePermissions.add(PosixFilePermission.OTHERS_EXECUTE);
+
+	        Files.setPosixFilePermissions(Paths.get("/usr/lib/gdrivefs.jar"), executablePermissions);
+	        Files.setPosixFilePermissions(Paths.get("/sbin/mount.gdrive"), executablePermissions);
+	        Files.setPosixFilePermissions(Paths.get("/sbin/mount.gdrivefs"), executablePermissions);
+	        Files.setPosixFilePermissions(Paths.get("/usr/bin/gdrive"), executablePermissions);
+	        Files.setPosixFilePermissions(Paths.get("/usr/bin/gdrivefs"), executablePermissions);
 		}
-		catch(Throwable t)
+		catch(IOException e)
 		{
-			if(reportFailures) throw new RuntimeException(t);
+			/* ignore; we tried! */
+			if(reportFailures) e.printStackTrace();
+		}
+	}
+	
+	private static File findJar() throws IOException
+	{
+		String[] classpath = System.getProperty("java.class.path").split(":");
+		
+		for(String classPathEntry : classpath)
+		{
+			JarFile jar = new JarFile(new File(classPathEntry));
+			try
+			{
+				Enumeration<JarEntry> entries = jar.entries();
+				while(entries.hasMoreElements())
+				{
+					JarEntry jarEntry = entries.nextElement();
+	
+					if("com/gdrivefs/MountGoogleDrive.class".equals(jarEntry.getName())) return new File(classPathEntry);
+				}
+			}
+			finally
+			{
+				jar.close();
+			}
+		}
+		
+		return null;
+	}
+	
+	private static void attemptInstall(String resource, java.io.File destination, boolean reportFailures)
+	{
+		if(destination.exists()) return;
+		try
+		{
+			FileUtils.writeByteArrayToFile(destination, IOUtils.toByteArray(MountGoogleDrive.class.getResourceAsStream(resource)));
+		}
+		catch(IOException e)
+		{
+			/* ignore; we tried! */
+			if(reportFailures) e.printStackTrace();
 		}
 	}
 }
