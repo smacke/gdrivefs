@@ -28,6 +28,8 @@ import com.jimsproch.sql.MemoryDatabase;
 
 public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 {
+	public static final String IDENTICAL_FORWARD_SLASH_CHARACTER = "∕";
+
 	Drive drive;
 	Database db = new MemoryDatabase();
 	
@@ -227,8 +229,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 			if(!directory.isDirectory()) return -ErrorCodes.ENOTDIR();
 			for(File child : directory.getChildren())
 			{
-				// Hack to support slashes in file names (swap in and out a nearly identical UTF-8 character)
-				filler.add(child.getTitle().replaceAll("/", "∕"));
+				filler.add(forwardSlashHack(child.getTitle()));
 			}
 		}
 		catch(NoSuchElementException e)
@@ -250,9 +251,9 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		
 		String[] pathElements = localPath.split("/");
 		
-		// Hack to support slashes in file names (swap in and out a nearly identical UTF-8 character)
-		for(int i = 0; i < pathElements.length; i++)
-			pathElements[i] = pathElements[i].replaceAll("∕", "/");
+		for(int i = 0; i < pathElements.length; i++) {
+			pathElements[i] = forwardSlashHack(pathElements[i]);
+		}
 		
 		File current = drive.getRoot();
 		for(int i = 1; i < pathElements.length; i++)
@@ -537,6 +538,15 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		}
 		
 		synchronized(this) { notifyAll(); }
+	}
+	
+	/**
+	 * Hack to support slashes in file names (swap in and out a nearly identical UTF-8 character)
+	 * @param s input string
+	 * @return s with forward slashes replaced by similar UTF-8 character
+	 */
+	private static String forwardSlashHack(String s) {
+		return s.replaceAll("/", IDENTICAL_FORWARD_SLASH_CHARACTER);
 	}
 	
 }

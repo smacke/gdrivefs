@@ -859,7 +859,6 @@ public class File
 	static java.io.File getCacheFile(String chunkMd5)
 	{
 		java.io.File cacheFile = new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "cache");
-		// TODO (smacke): why are we doing this again?
 		for(byte c : chunkMd5.getBytes()) {
 			cacheFile = new java.io.File(cacheFile, Character.toString((char) c));
 		}
