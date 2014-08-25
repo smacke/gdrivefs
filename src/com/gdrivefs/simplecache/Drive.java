@@ -76,6 +76,8 @@ public class Drive implements Closeable
 	{
 		MemoryDatabase db = new MemoryDatabase();
 		
+		buildTables(db);
+		
 		return db;
 	}
 	
