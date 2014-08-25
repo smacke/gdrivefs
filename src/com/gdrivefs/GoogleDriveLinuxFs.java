@@ -23,15 +23,16 @@ import com.gdrivefs.internal.FileWriteCollector;
 import com.gdrivefs.simplecache.Drive;
 import com.gdrivefs.simplecache.File;
 import com.google.api.client.http.HttpTransport;
-import com.jimsproch.sql.Database;
-import com.jimsproch.sql.MemoryDatabase;
 
 public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 {
 	public static final String IDENTICAL_FORWARD_SLASH_CHARACTER = "∕";
 
 	Drive drive;
-	Database db = new MemoryDatabase();
+	
+	private Map<Long, File> fileHandles = new HashMap<Long, File>();  // TODO: Figure out when handles should be dropped
+	private Map<File, FileWriteCollector> openFiles = new HashMap<File, FileWriteCollector>();
+	private long nextFileHandleId = 1;
 	
 	public GoogleDriveLinuxFs(Drive drive, HttpTransport transport)
 	{
@@ -80,14 +81,16 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		
 		try
 		{
-			try { getCachedPath(path); return -ErrorCodes.EEXIST(); }
+			try { getPath(path); return -ErrorCodes.EEXIST(); }
 			catch(NoSuchElementException e) { /* Do nothing, the directory doesn't yet exist */ }
 			
 			File parent;
 			try { parent = getParentPath(path); }
 			catch(NoSuchElementException e) { return -ErrorCodes.ENOENT(); }
 			
-			parent.createFile(path.substring(path.lastIndexOf('/')+1));
+			File newFile = parent.createFile(path.substring(path.lastIndexOf('/')+1));
+			info.fh(nextFileHandleId++);
+			fileHandles.put(info.fh(), newFile);
 			return 0;
 		}
 		catch(IOException e)
@@ -101,7 +104,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			File f = getCachedPath(path);
+			File f = getPath(path);
 			
 			if(f.isDirectory())
 			{
@@ -151,8 +154,8 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		if("/".equals(path)) return drive.getRoot();
 		while(path.endsWith("/")) path = path.substring(0, path.length()-1);
 		path = path.substring(0, path.lastIndexOf("/"));
-		if("".equals(path)) return getCachedPath("/");
-		else return getCachedPath(path);
+		if("".equals(path)) return getPath("/");
+		else return getPath(path);
 	}
 
 	@Override
@@ -163,7 +166,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		
 		try
 		{
-			try { getCachedPath(path); return -ErrorCodes.EEXIST(); }
+			try { getPath(path); return -ErrorCodes.EEXIST(); }
 			catch(NoSuchElementException e) { /* Do nothing, the directory doesn't yet exist */ }
 			
 			File parent;
@@ -182,6 +185,20 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int open(final String path, final FileInfoWrapper info)
 	{
+		try
+		{
+			info.fh(nextFileHandleId++);
+			fileHandles.put(info.fh(), getPath(path));
+		}
+		catch(NoSuchElementException e)
+		{
+			return -ErrorCodes.ENOENT();
+		}
+		catch(IOException e)
+		{
+			e.printStackTrace();
+			return -ErrorCodes.EIO();
+		}
 		return 0;
 	}
 
@@ -190,7 +207,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			File f = getCachedPath(path);
+			File f = info.fh() != 0 ? fileHandles.get(info.fh()) : getPath(path);
 
 			if(f.isDirectory()) return -ErrorCodes.EISDIR();
 
@@ -224,7 +241,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			File directory = getCachedPath(path);
+			File directory = getPath(path);
 			getParentPath(path).considerAsyncDirectoryRefresh(2, TimeUnit.MINUTES);
 			if(!directory.isDirectory()) return -ErrorCodes.ENOTDIR();
 			for(File child : directory.getChildren())
@@ -245,7 +262,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		return 0;
 	}
 	
-	private File getCachedPath(String localPath) throws IOException
+	private File getPath(String localPath) throws IOException
 	{
 		if(!localPath.startsWith("/")) throw new IllegalArgumentException("Expected local path to start with a slash ("+localPath+")");
 		
@@ -275,7 +292,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			File file = getCachedPath(oldPath);
+			File file = getPath(oldPath);
 			File oldParent = getParentPath(oldPath);
 			File newParent = getParentPath(newPath);
 			String oldName = getLastComponent(oldPath);
@@ -284,7 +301,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 			if(!newParent.isDirectory()) return -ErrorCodes.ENOTDIR();
 			
 			// Rename is typically atomic on Linux, so systems will use it as a way of doing atomic writes by overriding destination
-			try { getCachedPath(newPath).trash(); }
+			try { getPath(newPath).trash(); }
 			catch(NoSuchElementException e) { /* destination didn't exist, which is fine */ }
 			
 			if(!oldParent.equals(newParent))
@@ -316,7 +333,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			File directory = getCachedPath(path);
+			File directory = getPath(path);
 			if(!directory.isDirectory()) return -ErrorCodes.ENOTDIR();
 			
 			if(directory.getParents().size() > 1) getParentPath(path).removeChild(directory);
@@ -342,7 +359,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	public int truncate(final String path, final long offset)
 	{
 		try {
-			getCachedPath(path).truncate(offset);
+			getPath(path).truncate(offset);
 			FileWriteCollector collector = openFiles.get(path);
 			if (collector != null) {
 				collector.truncate(offset);
@@ -359,7 +376,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	{
 		try
 		{
-			File file = getCachedPath(path);
+			File file = getPath(path);
 			if(file.getParents().size() > 1) getParentPath(path).removeChild(file);
 			else
 			{
@@ -380,20 +397,19 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		}
 	}
 	
-	public Map<String, FileWriteCollector> openFiles = new HashMap<String, FileWriteCollector>();
-
 	@Override
 	public synchronized int write(final String path, final ByteBuffer buf, final long bufSize, final long writeOffset, final FileInfoWrapper wrapper)
 	{
-		FileWriteCollector collector = openFiles.get(path);
+		// Sanity check
+		if(wrapper.fh() == 0) throw new Error("File handle for "+path+" should be non-zero");
+		
+		FileWriteCollector collector = openFiles.get(fileHandles.get(wrapper.fh()));
 		try
 		{
 			if(collector == null)
 			{
-				// we cannot guarantee consistency for files that are being written while being moved. :(
-				File f = getCachedPath(path);
-				collector = new FileWriteCollector(f, path.substring(path.lastIndexOf('/')+1));
-				openFiles.put(path, collector);
+				collector = new FileWriteCollector(fileHandles.get(wrapper.fh()), path.substring(path.lastIndexOf('/')+1));
+				openFiles.put(fileHandles.get(wrapper.fh()), collector);
 			}
 			
 			collector.write(writeOffset, buf, bufSize);
@@ -420,15 +436,14 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public synchronized int flush(String path, FileInfoWrapper info)
 	{
-		FileWriteCollector collector = openFiles.get(path);
+		FileWriteCollector collector = openFiles.get(fileHandles.get(info.fh()));
 		try
 		{
 			if(collector == null) return 0;
-			System.out.println("flush");
 			collector.flushCurrentFragmentToDb();
-			getCachedPath(path).update();
-			openFiles.remove(path);
-			collector.getFile();
+			fileHandles.get(info.fh()).update();
+			openFiles.remove(fileHandles.get(info.fh()));
+			collector.getFile(); // TODO: Getters shouldn't have visible side effects; consider adding a close() or flush() method.
 			return 0;
 		}
 		catch(IOException e)
