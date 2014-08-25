@@ -906,10 +906,6 @@ public class File
     			out.close();
     		}
     	}
-		FileInputStream stream = new FileInputStream(getUploadFile());
-		String md5;
-		try { md5 = DigestUtils.md5Hex(stream); }
-		finally { stream.close(); }
 	}
 	
 	public byte[] getBytesByAnyMeans(long start, long end) throws IOException
