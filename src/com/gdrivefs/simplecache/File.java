@@ -2,6 +2,7 @@ package com.gdrivefs.simplecache;
 
 import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.net.URL;
@@ -618,18 +619,20 @@ public class File
 		}
 	}
 
-	public void update(java.io.File file) throws IOException
+	public void update() throws IOException
 	{
-		FileUtils.copyFile(file, getUploadFile(this));
-		FileInputStream stream = new FileInputStream(getUploadFile(this));
-		String md5;
-		try { md5 = DigestUtils.md5Hex(stream); }
-		finally { stream.close(); }
-		
 		acquireWrite();
 		try
 		{
-			String[] logEntry = new String[]{this.getLocalId().toString(), Long.toString(getUploadFile(this).length()), md5};
+            fillInGapsBetween(0, getSize());
+            storeFragmentsToUploadFile();
+
+            FileInputStream stream = new FileInputStream(getUploadFile());
+            String md5;
+            try { md5 = DigestUtils.md5Hex(stream); }
+            finally { stream.close(); }
+
+			String[] logEntry = new String[]{this.getLocalId().toString(), Long.toString(getUploadFile().length()), md5};
 			playOnDatabase("update", logEntry);
 			playOnMetadata("update", logEntry);
 		}
@@ -659,7 +662,7 @@ public class File
     {
     	RandomAccessFile uploadFile = null;
     	try {
-    		uploadFile = new RandomAccessFile(getUploadFile(this), "rw");
+    		uploadFile = new RandomAccessFile(getUploadFile(), "rw");
     		uploadFile.setLength(offset);
     	} finally {
     		if (uploadFile != null) {
@@ -683,7 +686,7 @@ public class File
 		}
 	}
 	
-    public void write(byte[] bytes, final long offset, java.io.File diskFile) throws IOException
+    public void write(byte[] bytes, final long offset) throws IOException
     {
     	String chunkMd5 = DigestUtils.md5Hex(bytes);
 		acquireWrite();
@@ -691,8 +694,8 @@ public class File
 		{
 			System.out.printf("write %d bytes at offset %d for file %s\n", bytes.length, offset, getTitle());
 			storeFragment(null, offset, bytes);
-			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null", diskFile.getAbsolutePath());
-			playOnMetadata("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null", diskFile.getAbsolutePath());
+			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
+			playOnMetadata("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
 		}
 		finally
 		{
@@ -793,8 +796,8 @@ public class File
     	// if two fragments start in the same place (fewer I/O calls)
     	List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE LOCALID=? AND ((ENDBYTE > ? AND ENDBYTE <= ?) OR (STARTBYTE >= ? AND STARTBYTE < ?) OR (STARTBYTE <= ? AND ENDBYTE >= ?)) ORDER BY STARTBYTE ASC, ENDBYTE DESC", getLocalId().toString(), start, end, start, end, start, end);
 
-    	long globalStartByte = fragmentStartByte;
-    	long globalEndByte = fragmentStartByte + fragment.length;
+    	long globalStartByte = start;
+    	long globalEndByte = end;
     	for (DatabaseRow row : rows) {
     		globalEndByte = Math.max(globalEndByte, row.getInteger("ENDBYTE"));
     	}
@@ -804,13 +807,13 @@ public class File
     		globalStartByte = Math.min(globalStartByte, rows.get(0).getInteger("STARTBYTE"));
     		merged = new byte[(int)(globalEndByte - globalStartByte)];
 
-    		System.arraycopy(fragment, 0, merged, (int)(fragmentStartByte-globalStartByte), fragment.length);
+    		System.arraycopy(fragment, 0, merged, (int)(start-globalStartByte), fragment.length);
 
     		long position = globalStartByte;
 
     		// skip the new fragment; we've already done an arraycopy
-    		if (position == fragmentStartByte) {
-    			position = fragmentStartByte + fragment.length;
+    		if (position == start) {
+    			position = end;
     		}
     		for (int chunk=0; chunk<rows.size(); chunk++) {
     			long chunkEnd = rows.get(chunk).getInteger("ENDBYTE");
@@ -827,8 +830,8 @@ public class File
     				merged[(int)(position-globalStartByte)] = fileBytes[(int)(position-chunkStart)];
     				position++;
     				// skip the new fragment; we've already done an arraycopy
-    				if (position == fragmentStartByte) {
-    					position = fragmentStartByte + fragment.length;
+    				if (position == start) {
+    					position = end;
     				}
     			}
     		}
@@ -861,11 +864,52 @@ public class File
 		return cacheFile;
 	}
 	
-	static java.io.File getUploadFile(File file) throws IOException
+	private java.io.File getUploadFile() throws IOException
 	{
-		java.io.File uploadFile = new java.io.File(new java.io.File(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "uploads"), file.localFileId.toString()), file.getTitle().replaceAll("/", ""));
+		java.io.File uploadFile = new java.io.File(new java.io.File(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "uploads"), getLocalId().toString()), getTitle().replaceAll("/", ""));
 		uploadFile.getParentFile().mkdirs();
 		return uploadFile;
+	}
+	
+	void storeFragmentsToUploadFile() throws IOException {
+		java.io.File uploadFile = getUploadFile();
+    	List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE LOCALID=? ORDER BY STARTBYTE ASC, ENDBYTE DESC", getLocalId().toString());
+    	FileOutputStream out = null;
+    	try {
+    		out = new FileOutputStream(uploadFile);
+    		int position = 0;
+    		for (DatabaseRow row : rows) {
+    			int startByte = row.getInteger("STARTBYTE");
+    			if (startByte > position) {
+    				throw new Error("unexpected gap");
+    			}
+    			int endByte = row.getInteger("ENDBYTE");
+    			if (endByte <= position) {
+    				continue;
+    			}
+    			byte[] chunk = FileUtils.readFileToByteArray(getCacheFile(row.getString("CHUNKMD5")));
+    			// sanity check
+    			if (chunk.length != endByte-startByte) {
+    				throw new Error("unexpected byte array from file");
+    			}
+    			out.write(chunk, position-startByte, endByte-position);
+    			position += (endByte - position);
+    			if (position == getSize()) {
+    				break;
+    			}
+    		}
+    		if (position != getSize()) {
+    			throw new Error("something went wrong reading upload file from fragments");
+    		}
+    	} finally {
+    		if (out != null) {
+    			out.close();
+    		}
+    	}
+		FileInputStream stream = new FileInputStream(getUploadFile());
+		String md5;
+		try { md5 = DigestUtils.md5Hex(stream); }
+		finally { stream.close(); }
 	}
 	
 	public byte[] getBytesByAnyMeans(long start, long end) throws IOException
@@ -972,9 +1016,9 @@ public class File
     	acquireWrite();
     	try
     	{
-    		java.io.File oldCacheLocation = getUploadFile(this);
+    		java.io.File oldCacheLocation = getUploadFile();
 	    	playEverywhere("setTitle", this.getLocalId().toString(), getTitle(), title);
-	    	if(oldCacheLocation.exists()) oldCacheLocation.renameTo(getUploadFile(this));
+	    	if(oldCacheLocation.exists()) oldCacheLocation.renameTo(getUploadFile());
     	}
     	finally
     	{
@@ -1345,7 +1389,6 @@ public class File
 //			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
 			// need to kick off download
 //			File file = drive.getFile(UUID.fromString(logEntry[0]));
-//			java.io.File diskFile = new java.io.File(logEntry[5]);
 			// TODO (smacke): locking??
 //			file.fillInGapsBetween(0, file.getSize());
 //			file.pokeUpdateThread(diskFile);
@@ -1497,7 +1540,7 @@ public class File
 							try
 							{
 								Thread.sleep(1000);
-								FileUtils.copyFile(fileOnDisk.get(), getUploadFile(File.this));
+								FileUtils.copyFile(fileOnDisk.get(), getUploadFile());
 								acquireWrite();
 								try
 								{
@@ -1544,9 +1587,8 @@ public class File
 			throw new RuntimeException("uploading should happen with lock held");
 		}
 		System.out.println("uploading contents of " + getTitle() + " to google");
-		File file = this;
-		String type = Files.probeContentType(Paths.get(getUploadFile(file).getAbsolutePath()));
-		FileContent mediaContent = new FileContent(type, getUploadFile(file));
+		String type = Files.probeContentType(Paths.get(getUploadFile().getAbsolutePath()));
+		FileContent mediaContent = new FileContent(type, getUploadFile());
 
 		com.google.api.services.drive.model.File newRemoteDirectory = drive.getRemote().files().get(getId()).execute();
 		newRemoteDirectory.setMimeType(type);
