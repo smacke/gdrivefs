@@ -35,6 +35,14 @@ public class TruncateTest
 				helloFile.truncate(5);
 				Assert.assertEquals(5, helloFile.getSize());
 			}
+			
+			builder.flush();
+			
+			{
+				com.gdrivefs.simplecache.File test = builder.uncleanDriveDirectory();
+				com.gdrivefs.simplecache.File helloFile = test.getChildren("hello.txt").get(0);
+				Assert.assertEquals(5, helloFile.getSize());
+			}
 		}
 		finally
 		{
