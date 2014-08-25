@@ -45,6 +45,7 @@ public class MountGoogleDrive
 	{
 		Options options = new Options();
 		options.addOption("t", true, "Filesystem type (always gdrivefs; ignored)");
+		options.addOption("v", false, "Verbose");
 		
 		CommandLineParser parser = new BasicParser();
 		CommandLine cmd = parser.parse(options, args);
@@ -108,7 +109,7 @@ public class MountGoogleDrive
 		
 		// Create and mount the filesystem
 		filesystem = new GoogleDriveLinuxFs(drive, httpTransport);
-		filesystem.setLoggingStatus(true);
+		filesystem.setLoggingStatus(cmd.hasOption('v'));
 		filesystem.mount(mountPoint, false);
 			
 		// Warm the cache by prefetching the drive root, which greatly improves the user experience

@@ -142,6 +142,7 @@ public class DriveBuilder implements Closeable
 		// Create and mount the filesystem
 		mountPoint = Files.createTempDir();
 		filesystem = new GoogleDriveLinuxFs(drive, httpTransport);
+		filesystem.setLoggingStatus(true);
 		filesystem.mount(mountPoint, false);
 
 		// Warm the cache by prefetching the drive root, which greatly improves the user experience
