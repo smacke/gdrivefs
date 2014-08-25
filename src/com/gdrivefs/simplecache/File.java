@@ -831,11 +831,6 @@ public class File
     					position = fragmentStartByte + fragment.length;
     				}
     			}
-    			// TODO (smacke): delete empty directories up the chain as well?
-    			java.io.File chunkFile = getCacheFile(chunkMd5);
-    			if (chunkFile.exists()) {
-    				chunkFile.delete();
-    			}
     		}
 
     		drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE LOCALID=? AND ((ENDBYTE > ? AND ENDBYTE <= ?) OR (STARTBYTE >= ? AND STARTBYTE < ?) OR (STARTBYTE <= ? AND ENDBYTE >= ?))", getLocalId().toString(), start, end, start, end, start, end);
