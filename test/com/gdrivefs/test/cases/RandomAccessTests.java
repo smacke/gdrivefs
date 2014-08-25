@@ -106,7 +106,7 @@ public class RandomAccessTests extends Assert
 	public void stressTestRandomAccessConcurrent() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
 	{
 		DriveBuilder builder = new DriveBuilder();
-		ExecutorService service = null;;
+		ExecutorService service = null;
 		final AtomicReference<AssertionError> exnCapture = new AtomicReference<>();
 		try
 		{
