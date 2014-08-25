@@ -51,7 +51,9 @@ public class DriveBuilder implements Closeable
 
 	public void flush() throws InterruptedException
 	{
-		if(filesystem != null) filesystem.flush(true);
+		if(filesystem != null) {
+			filesystem.flush(true);
+		}
 		else drive.flush(true);
 	}
 	

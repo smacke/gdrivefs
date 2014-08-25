@@ -340,7 +340,16 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int truncate(final String path, final long offset)
 	{
-		System.out.println("truncate: "+offset);
+		try {
+			getCachedPath(path).truncate(offset);
+			FileWriteCollector collector = openFiles.get(path);
+			if (collector != null) {
+				collector.truncate(offset);
+			}
+		} catch (IOException e) {
+			e.printStackTrace();
+			return -ErrorCodes.EIO();
+		}
 		return 0;
 	}
 

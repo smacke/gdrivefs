@@ -39,6 +39,15 @@ public class FileWriteCollector
 		currentPosition += length;
 	}
 	
+	public void truncate(long offset) throws IOException
+	{
+		if (delegate==null) {
+			return;
+		}
+		
+		delegate.setLength(offset);
+	}
+	
 	public java.io.File getFile() throws IOException
 	{
 		delegate.close();

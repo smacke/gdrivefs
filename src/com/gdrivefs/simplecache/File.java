@@ -38,13 +38,13 @@ import com.google.api.services.drive.model.ParentReference;
 import com.google.api.services.drive.model.Property;
 import com.google.common.collect.ImmutableList;
 import com.jimsproch.sql.Database;
-import com.jimsproch.sql.DatabaseConnectionException;
 import com.jimsproch.sql.DatabaseRow;
 import com.jimsproch.sql.Transaction;
 import com.thoughtworks.xstream.XStream;
 
 /**
- * File represents a particular remote file (as represented by Google's file ID), but provides a clean interface for performing reads and writes
+ * File represents a particular remote file (as represented by Google's file ID),
+ * but provides a clean interface for performing reads and writes
  * through the localhost cache layer.
  */
 public class File
@@ -508,7 +508,7 @@ public class File
 		try
 		{
 			if(size == null) readBasicMetadata();
-			return size;
+			return size == null ? 0 : size;
 		}
 		finally
 		{
@@ -639,7 +639,7 @@ public class File
 		}
 	}
 	
-    public byte[] read(final long size, final long offset) throws DatabaseConnectionException, IOException
+    public byte[] read(final long size, final long offset) throws IOException
     {
 		acquireRead();
 		try
@@ -655,12 +655,25 @@ public class File
 		}
 	}
 	
-    public void truncate(final long offset) throws DatabaseConnectionException, IOException
+    public void truncate(final long offset) throws IOException
     {
+    	RandomAccessFile uploadFile = null;
+    	try {
+    		uploadFile = new RandomAccessFile(getUploadFile(this), "rw");
+    		uploadFile.setLength(offset);
+    	} finally {
+    		if (uploadFile != null) {
+    			uploadFile.close();
+    		}
+    	}
 		acquireWrite();
 		System.out.println("truncate for " + getTitle());
 		try
 		{
+			long oldSize = getSize();
+			dropFragmentsStartingAtOrAfter(offset);
+			// extend by 0 if necessary
+			storeFragment(null, oldSize, new byte[(int)Math.max(0, offset-oldSize)]);
 			playOnDatabase("truncate", this.getLocalId().toString(), Long.toString(offset), "null");
 			playOnMetadata("truncate", this.getLocalId().toString(), Long.toString(offset), "null");
 		}
@@ -670,7 +683,7 @@ public class File
 		}
 	}
 	
-    public void write(byte[] bytes, final long offset, java.io.File diskFile) throws DatabaseConnectionException, IOException
+    public void write(byte[] bytes, final long offset, java.io.File diskFile) throws IOException
     {
     	String chunkMd5 = DigestUtils.md5Hex(bytes);
 		acquireWrite();
@@ -768,6 +781,9 @@ public class File
     		byte[] fragment) throws IOException {
     	long start = fragmentStartByte;
     	long end = fragmentStartByte + fragment.length;
+    	if (fragment.length==0) {
+    		return;
+    	}
     	System.out.println("store fragment for " + getTitle() + ": start=" + start + ", end=" + end);
     	// get overlapping fragments
     	// sort by startbyte asc
@@ -833,6 +849,13 @@ public class File
 
     }
     
+    private void dropFragmentsStartingAtOrAfter(long offset) throws IOException {
+    	if (!drive.lock.isWriteLockedByCurrentThread()) {
+    		throw new Error("need write lock to do writes");
+    	}
+    	drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE LOCALID=? AND STARTBYTE>=?", getLocalId().toString(), offset);
+    }
+    
 	static java.io.File getCacheFile(String chunkMd5)
 	{
 		java.io.File cacheFile = new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "cache");
@@ -851,7 +874,7 @@ public class File
 		return uploadFile;
 	}
 	
-	public byte[] getBytesByAnyMeans(long start, long end) throws DatabaseConnectionException, IOException
+	public byte[] getBytesByAnyMeans(long start, long end) throws IOException
 	{
 		// this will be holding a read lock
 		fillInGapsBetween(start, end);
@@ -900,7 +923,7 @@ public class File
 		return output;
 	}
 	
-	void fillInGapsBetween(long start, long end) throws DatabaseConnectionException, IOException
+	void fillInGapsBetween(long start, long end) throws IOException
 	{
 		// This method may not necessarily be holding a read lock
 		// TODO (smacke): should it??
@@ -1023,9 +1046,11 @@ public class File
 			if(!getLocalId().equals(childId)) return;
 			
 			File parent = null;
-			for(File f : parents)
-				if(parentId.equals(f.getLocalId()))
+			for(File f : parents) {
+				if(parentId.equals(f.getLocalId())) {
 					parent = f;
+				}
+			}
 
 			parents.remove(parent);
 		}
@@ -1074,9 +1099,11 @@ public class File
 			if(!getLocalId().equals(parentId)) return;
 			
 			File child = null;
-			for(File f : children)
-				if(childId.equals(f.getLocalId()))
+			for(File f : children) {
+				if(childId.equals(f.getLocalId())) {
 					child = f;
+				}
+			}
 
 			children.remove(child);
 		}
@@ -1162,7 +1189,7 @@ public class File
 		else if("truncate".equals(command))
 		{
 			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
-			size = Math.min(size, Long.parseLong(logEntry[1]));
+			size = Long.parseLong(logEntry[1]);
 			fileMd5 = "null".equals(logEntry[2]) ? null : logEntry[2];
 		}
 		else if("write".equals(command))
@@ -1295,7 +1322,7 @@ public class File
 			String googleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
 			drive.getRemote().files().trash(googleFileId).execute();
 		}
-		else if("update".equals(command))
+		else if("update".equals(command) || "truncate".equals(command))
 		{
 			File file = drive.getFile(UUID.fromString(logEntry[0]));
 			file.acquireWrite();
@@ -1312,15 +1339,14 @@ public class File
 				file.releaseWrite();
 			}
 		}
-		else if("truncate".equals(command))
-		{
-			// TODO: https://developers.google.com/drive/v2/reference/files/patch
-			throw new UnsupportedOperationException("Not yet implemented");
-		}
+//		else if("truncate".equals(command))
+//		{
+//			// TODO: https://developers.google.com/drive/v2/reference/files/patch
+//			// no-op
+//		}
 		else if("write".equals(command))
 		{
 			// TODO: https://developers.google.com/drive/v2/reference/files/patch
-//			throw new UnsupportedOperationException("Not yet implemented");
 			// no-op
 //			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
 			// need to kick off download
@@ -1537,7 +1563,7 @@ public class File
 		refresh(newRemoteDirectory, asof);
 	}
 	
-	void dropFragmentsFromDb() throws DatabaseConnectionException, IOException {
+	void dropFragmentsFromDb() throws IOException {
 		acquireWrite();
 		try {
 			System.out.println("dropped fragments for file " + title);
