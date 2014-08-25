@@ -93,8 +93,11 @@ public class MountGoogleDrive
 		GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(httpTransport, JSON_FACTORY, "930897891601-4mbqrmuu5osvk7j3vlkv8k59liot620f.apps.googleusercontent.com", "v18DcOoqIvmVgPVtisCijpTV", Collections.singleton(DriveScopes.DRIVE)).setCredentialDataStore(credentialDataStore).build();
 		Credential credential = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
 		
+		java.io.File dbdir = new java.io.File(new java.io.File(new java.io.File(System.getProperty("user.home")), ".googlefs"), "/db");
+		dbdir.getParentFile().mkdirs();
+
 		com.google.api.services.drive.Drive remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();
-		com.gdrivefs.simplecache.Drive drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
+		com.gdrivefs.simplecache.Drive drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport, dbdir);
 		
 		// Save the credentials using the account that the user ultimately authenticated with
 		email = remote.about().get().execute().getUser().getEmailAddress();

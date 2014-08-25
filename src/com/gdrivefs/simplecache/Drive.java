@@ -9,14 +9,20 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
+import org.apache.derby.jdbc.ClientDriver;
+import org.apache.derby.jdbc.EmbeddedDriver;
+
 import com.gdrivefs.simplecache.internal.DriveExecutorService;
 import com.google.api.client.http.HttpTransport;
 import com.google.api.services.drive.model.Property;
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import com.jimsproch.sql.Database;
+import com.jimsproch.sql.IllegalOperationError;
 import com.jimsproch.sql.MemoryDatabase;
 
 /**
@@ -41,40 +47,89 @@ public class Drive implements Closeable
 
 	final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
 	
-	String rootId;
+	Supplier<String> rootId = Suppliers.memoize(new Supplier<String>(){
+		@Override
+		public String get()
+		{
+			try
+			{
+				return getDatabase().getString("SELECT ROOT FROM DRIVES");
+			}
+			catch(NoSuchElementException e)
+			{
+				try
+				{
+					String id = getRemote().about().get().execute().getRootFolderId();
+					getDatabase().execute("INSERT INTO DRIVES(ROOT) VALUES(?)", id);
+					return id;
+				}
+				catch(IOException e2)
+				{
+					throw new RuntimeException(e2);
+				}
+			}
+		}});
 	
 	public Drive(com.google.api.services.drive.Drive remote, HttpTransport transport)
 	{
 		this(remote, transport, createMemoryDatabase());
 	}
 	
+	public Drive(com.google.api.services.drive.Drive remote, HttpTransport transport, java.io.File dbdir)
+	{
+		this(remote, transport, createDiskDatabase(dbdir));
+	}
+	
 	private static Database createMemoryDatabase()
 	{
 		MemoryDatabase db = new MemoryDatabase();
 		
-		db.execute("CREATE TABLE DRIVES(ROOT VARCHAR(255))");
-		db.execute("CREATE TABLE FILES(ID VARCHAR(255), LOCALID CHAR(36) NOT NULL, TITLE VARCHAR(255) NOT NULL, MIMETYPE VARCHAR(255) NOT NULL, MD5HEX CHAR(32), SIZE BIGINT, MTIME TIMESTAMP, DOWNLOADURL CLOB, METADATAREFRESHED TIMESTAMP, CHILDRENREFRESHED TIMESTAMP, PARENTSREFRESHED TIMESTAMP)");
-		db.execute("CREATE TABLE RELATIONSHIPS(PARENT VARCHAR(255), CHILD VARCHAR(255))");
-		db.execute("CREATE TABLE FRAGMENTS(LOCALID CHAR(36) NOT NULL, FILEMD5 CHAR(32), CHUNKMD5 CHAR(32) NOT NULL, STARTBYTE INT NOT NULL, ENDBYTE INT NOT NULL)");
+		return db;
+	}
+	
+	private static Database createDiskDatabase(java.io.File dbdir)
+	{
+		try { Class.forName(ClientDriver.class.getCanonicalName()); }
+		catch(ClassNotFoundException e) { throw new Error(); }
 		
-		// UPDATELOG contains operations that have logically happened on the local 
-		// memory model but may not have been synced with Google's servers.
-		// The persistent database tables represent the state of the world,
-		// and the memory model represents the logical state of localhost (the difference is stored in this table)
-		// When updating the memory model, you must select from the other tables and then iterate over this table 
-		// to replay changes that have yet to be sync'd
-		// Rows from this table may be played somewhat out of order 
-		// (eg. uploads take a long time and might be delayed, while deletes might happen immediately), though in-order is ideal)
-		// so long as it doesn't break any individual file's logical view of the world
-		// ID allows the table to be sorted by logical event ID for replaying, isdone indicates
-		// if Google should be aware of the change, and details stores details of the task
-		db.execute("CREATE TABLE UPDATELOG(ID INTEGER NOT NULL GENERATED ALWAYS AS IDENTITY (START WITH 1, INCREMENT BY 1), COMMAND VARCHAR(64), ISDONE SMALLINT DEFAULT 0, DETAILS CLOB)");
-
-		db.execute("CREATE UNIQUE INDEX FILE_ID ON FILES(ID)");
-		db.execute("CREATE UNIQUE INDEX RELATIONSHIPS_CHILD_PARENT ON RELATIONSHIPS(CHILD, PARENT)");
-//		db.execute("CREATE INDEX FRAGMENTS_FILEMD5 ON FRAGMENTS(FILEMD5)");
+		Database db = new Database(EmbeddedDriver.class.getCanonicalName(), "jdbc:derby:"+dbdir.getAbsolutePath()+";create=true", "APP", "APP", "VALUES 1");
+		
+		buildTables(db);
 		
 		return db;
+	}
+	
+	private static void buildTables(Database db)
+	{
+		try
+		{
+			db.execute("CREATE TABLE DRIVES(ROOT VARCHAR(255))");
+			db.execute("CREATE TABLE FILES(ID VARCHAR(255), LOCALID CHAR(36) NOT NULL, TITLE VARCHAR(255) NOT NULL, MIMETYPE VARCHAR(255) NOT NULL, MD5HEX CHAR(32), SIZE BIGINT, MTIME TIMESTAMP, DOWNLOADURL CLOB, METADATAREFRESHED TIMESTAMP, CHILDRENREFRESHED TIMESTAMP, PARENTSREFRESHED TIMESTAMP)");
+			db.execute("CREATE TABLE RELATIONSHIPS(PARENT VARCHAR(255), CHILD VARCHAR(255))");
+			db.execute("CREATE TABLE FRAGMENTS(LOCALID CHAR(36) NOT NULL, FILEMD5 CHAR(32), CHUNKMD5 CHAR(32) NOT NULL, STARTBYTE INT NOT NULL, ENDBYTE INT NOT NULL)");
+			
+			// UPDATELOG contains operations that have logically happened on the local 
+			// memory model but may not have been synced with Google's servers.
+			// The persistent database tables represent the state of the world,
+			// and the memory model represents the logical state of localhost (the difference is stored in this table)
+			// When updating the memory model, you must select from the other tables and then iterate over this table 
+			// to replay changes that have yet to be sync'd
+			// Rows from this table may be played somewhat out of order 
+			// (eg. uploads take a long time and might be delayed, while deletes might happen immediately), though in-order is ideal)
+			// so long as it doesn't break any individual file's logical view of the world
+			// ID allows the table to be sorted by logical event ID for replaying, isdone indicates
+			// if Google should be aware of the change, and details stores details of the task
+			db.execute("CREATE TABLE UPDATELOG(ID INTEGER NOT NULL GENERATED ALWAYS AS IDENTITY (START WITH 1, INCREMENT BY 1), COMMAND VARCHAR(64), ISDONE SMALLINT DEFAULT 0, DETAILS CLOB)");
+	
+			db.execute("CREATE UNIQUE INDEX FILE_ID ON FILES(ID)");
+			db.execute("CREATE UNIQUE INDEX RELATIONSHIPS_CHILD_PARENT ON RELATIONSHIPS(CHILD, PARENT)");
+	//		db.execute("CREATE INDEX FRAGMENTS_FILEMD5 ON FRAGMENTS(FILEMD5)");
+		}
+		catch(IllegalOperationError e)
+		{
+			if(e.getCause().getMessage().contains("already exists in Schema")) /* do nothing */;
+			else throw e;
+		}
 	}
 	
 	public Drive(com.google.api.services.drive.Drive remote, HttpTransport transport, Database db)
@@ -126,17 +181,7 @@ public class Drive implements Closeable
 		lock.readLock().lock();
 		try
 		{
-			if(rootId == null)
-				try
-				{
-					rootId = getDatabase().getString("SELECT ROOT FROM DRIVES");
-				}
-				catch(NoSuchElementException e)
-				{
-					rootId = getRemote().about().get().execute().getRootFolderId();
-					getDatabase().execute("INSERT INTO DRIVES(ROOT) VALUES(?)", rootId);
-				}
-			
+			String rootId = this.rootId.get();
 			File rootFile = googleFiles.getIfPresent(rootId);
 			if(rootFile != null) return rootFile;
 			rootFile = new File(this, rootId);
