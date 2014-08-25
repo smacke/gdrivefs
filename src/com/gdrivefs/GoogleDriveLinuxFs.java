@@ -214,7 +214,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 			boolean isGoogleDoc = f.getMimeType().startsWith("application/vnd.google-apps.");
 			if(isGoogleDoc) return -ErrorCodes.EMEDIUMTYPE();
 			
-			FileWriteCollector collector = openFiles.get(path);
+			FileWriteCollector collector = openFiles.get(f);
 			if (collector != null) {
 				// need to flush to the simplecache, so that
 				// the most up-to-date fragment is available for reads
