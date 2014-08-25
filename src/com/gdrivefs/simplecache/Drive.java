@@ -14,6 +14,7 @@ import org.apache.derby.jdbc.EmbeddedDriver;
 
 import com.gdrivefs.simplecache.internal.DriveExecutorService;
 import com.google.api.client.http.HttpTransport;
+import com.google.api.services.drive.model.About;
 import com.google.api.services.drive.model.Property;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
@@ -53,20 +54,11 @@ public class Drive implements Closeable
 		{
 			try
 			{
-				return getDatabase().getString("SELECT ROOT FROM DRIVES");
+				return getRemote().about().get().execute().getRootFolderId();
 			}
-			catch(NoSuchElementException e)
+			catch(IOException e2)
 			{
-				try
-				{
-					String id = getRemote().about().get().execute().getRootFolderId();
-					getDatabase().execute("INSERT INTO DRIVES(ROOT) VALUES(?)", id);
-					return id;
-				}
-				catch(IOException e2)
-				{
-					throw new RuntimeException(e2);
-				}
+				throw new RuntimeException(e2);
 			}
 		}});
 	
@@ -103,7 +95,6 @@ public class Drive implements Closeable
 	{
 		try
 		{
-			db.execute("CREATE TABLE DRIVES(ROOT VARCHAR(255))");
 			db.execute("CREATE TABLE FILES(ID VARCHAR(255), LOCALID CHAR(36) NOT NULL, TITLE VARCHAR(255) NOT NULL, MIMETYPE VARCHAR(255) NOT NULL, MD5HEX CHAR(32), SIZE BIGINT, MTIME TIMESTAMP, DOWNLOADURL CLOB, METADATAREFRESHED TIMESTAMP, CHILDRENREFRESHED TIMESTAMP, PARENTSREFRESHED TIMESTAMP)");
 			db.execute("CREATE TABLE RELATIONSHIPS(PARENT VARCHAR(255), CHILD VARCHAR(255))");
 			db.execute("CREATE TABLE FRAGMENTS(LOCALID CHAR(36) NOT NULL, FILEMD5 CHAR(32), CHUNKMD5 CHAR(32) NOT NULL, STARTBYTE INT NOT NULL, ENDBYTE INT NOT NULL)");
