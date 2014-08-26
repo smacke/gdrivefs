@@ -20,6 +20,7 @@ import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -58,6 +59,7 @@ public class File
 	public static final int FRAGMENT_BOUNDARY = 1<<25; //32 MiB
 	private static final int MAX_UPDATE_THREADS = 5;
 	static ExecutorService updaterService = Executors.newFixedThreadPool(MAX_UPDATE_THREADS);
+	private static long WRITE_THRESHOLD_MILLIS = 10000;
 
 	String googleFileId;
 	UUID localFileId;
@@ -76,7 +78,6 @@ public class File
 	DuplicateRejectingList children;
 	DuplicateRejectingList parents;
 	final Lock uploadLock = new ReentrantLock();
-	
 	final ExponentialBackOff uploadBackoff = new ExponentialBackOff.Builder()
 		    .setInitialIntervalMillis(500)
 		    .setMaxElapsedTimeMillis(900000)
@@ -84,6 +85,30 @@ public class File
 		    .setMultiplier(1.5)
 		    .setRandomizationFactor(0.5)
 		    .build();
+	volatile long lastWriteTime=-1;
+	AtomicBoolean freshWrite = new AtomicBoolean(false);
+	ScheduledExecutorService writeCheckService = Executors.newScheduledThreadPool(1);
+	{
+		writeCheckService.scheduleAtFixedRate(new Runnable() {
+
+			@Override
+			public void run()
+			{
+				if (System.currentTimeMillis() - lastWriteTime > WRITE_THRESHOLD_MILLIS && freshWrite.getAndSet(false)) {
+					// schedule the upload if it's been 10 seconds
+					try
+					{
+						update();
+					}
+					catch(IOException e)
+					{
+						throw new RuntimeException(e);
+					}
+				}
+			}
+			
+		}, WRITE_THRESHOLD_MILLIS, WRITE_THRESHOLD_MILLIS, TimeUnit.MILLISECONDS);
+	}
 	
 	File(Drive drive, String id)
 	{
@@ -652,6 +677,13 @@ public class File
             String md5;
             try { md5 = DigestUtils.md5Hex(stream); }
             finally { stream.close(); }
+            
+            // don't bother to do the upload if nothing changed
+            if (md5.equals(fileMd5)) {
+            	return;
+            }
+            // set the new md5
+            fileMd5 = md5;
 
 			String[] logEntry = new String[]{this.getLocalId().toString(), Long.toString(getUploadFile().length()), md5};
 			playOnDatabase("update", logEntry);
@@ -820,12 +852,12 @@ public class File
     	long globalStartByte = start;
     	long globalEndByte = end;
     	for (DatabaseRow row : rows) {
-    		globalEndByte = Math.max(globalEndByte, row.getInteger("ENDBYTE"));
+    		globalEndByte = Math.max(globalEndByte, row.getLong("ENDBYTE"));
     	}
 
     	byte[] merged;
     	if (rows.size() > 0) {
-    		globalStartByte = Math.min(globalStartByte, rows.get(0).getInteger("STARTBYTE"));
+    		globalStartByte = Math.min(globalStartByte, rows.get(0).getLong("STARTBYTE"));
     		merged = new byte[(int)(globalEndByte - globalStartByte)];
 
     		System.arraycopy(fragment, 0, merged, (int)(start-globalStartByte), fragment.length);
@@ -837,14 +869,17 @@ public class File
     			position = end;
     		}
     		for (int chunk=0; chunk<rows.size(); chunk++) {
-    			long chunkEnd = rows.get(chunk).getInteger("ENDBYTE");
+    			long chunkEnd = rows.get(chunk).getLong("ENDBYTE");
     			if (position >= chunkEnd) {
     				continue;
     			}
     			String chunkMd5 = rows.get(chunk).getString("CHUNKMD5");
-    			int chunkStart = rows.get(chunk).getInteger("STARTBYTE");
+    			long chunkStart = rows.get(chunk).getLong("STARTBYTE");
     			if (position < chunkStart) {
     				throw new Error("inexplicable gap");
+    			}
+    			if (chunkEnd - chunkStart > FRAGMENT_BOUNDARY) {
+    				throw new Error("chunk larger than max google fragment size!");
     			}
     			byte[] fileBytes = FileUtils.readFileToByteArray(getCacheFile(chunkMd5));
     			while (position < chunkEnd) {
@@ -1454,14 +1489,9 @@ public class File
 		}
 		else if("write".equals(command))
 		{
-			// TODO: https://developers.google.com/drive/v2/reference/files/patch
-			// no-op
-//			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
-			// need to kick off download
-//			File file = drive.getFile(UUID.fromString(logEntry[0]));
-			// TODO (smacke): locking??
-//			file.fillInGapsBetween(0, file.getSize());
-//			file.pokeUpdateThread(diskFile);
+			final File file = drive.getFile(UUID.fromString(logEntry[0]));
+			file.lastWriteTime = System.currentTimeMillis();
+			file.freshWrite.set(true);
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
