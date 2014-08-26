@@ -13,6 +13,7 @@ import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.GregorianCalendar;
 import java.util.List;
@@ -21,18 +22,23 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import javax.annotation.Nullable;
 
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 
+import com.gdrivefs.ConflictingOperationInProgressException;
 import com.google.api.client.http.FileContent;
 import com.google.api.client.http.GenericUrl;
 import com.google.api.client.http.HttpRequest;
 import com.google.api.client.http.HttpRequestFactory;
 import com.google.api.client.http.HttpResponse;
+import com.google.api.client.util.ExponentialBackOff;
 import com.google.api.client.util.IOUtils;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
@@ -50,6 +56,9 @@ import com.thoughtworks.xstream.XStream;
  */
 public class File
 {
+	private static final int MAX_UPDATE_THREADS = 1; // asynchronous uploads happen synchronously
+	static ExecutorService updaterService = Executors.newFixedThreadPool(MAX_UPDATE_THREADS);
+
 	String googleFileId;
 	UUID localFileId;
 	final Drive drive;
@@ -66,9 +75,15 @@ public class File
 	Timestamp modifiedTime;
 	DuplicateRejectingList children;
 	DuplicateRejectingList parents;
-	volatile Thread updater;
-	ExecutorService updaterService = Executors.newFixedThreadPool(1);
-	final AtomicReference<java.io.File> fileOnDisk = new AtomicReference<>();
+	final Lock uploadLock = new ReentrantLock();
+	
+	final ExponentialBackOff uploadBackoff = new ExponentialBackOff.Builder()
+		    .setInitialIntervalMillis(500)
+		    .setMaxElapsedTimeMillis(900000)
+		    .setMaxIntervalMillis(6000)
+		    .setMultiplier(1.5)
+		    .setRandomizationFactor(0.5)
+		    .build();
 	
 	File(Drive drive, String id)
 	{
@@ -139,8 +154,14 @@ public class File
 	
 		if(row == null) return;  // We're done processing queue, just return (no need to continue poking the log player either).
 			
-		playOnRemote(drive, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
-		drive.getDatabase().execute("DELETE FROM UPDATELOG WHERE ID=?", row.getInteger("ID"));
+		try {
+            playOnRemote(drive, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
+            drive.getDatabase().execute("DELETE FROM UPDATELOG WHERE ID=?", row.getInteger("ID"));
+		} catch (ConflictingOperationInProgressException e) {
+			// in this case, we refuse to delete from the update log
+			// and will retry the most recent log entry, w/ some
+			// exponential backoff
+		}
 		drive.pokeLogPlayer();
 	}
 	
@@ -851,7 +872,7 @@ public class File
     	if (!drive.lock.isWriteLockedByCurrentThread()) {
     		throw new Error("need write lock to do writes");
     	}
-    	drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE LOCALID=? AND STARTBYTE>=?", getLocalId().toString(), offset);
+    	drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE LOCALID=? AND STARTBYTE>=?", getLocalId(), offset);
     }
     
 	static java.io.File getCacheFile(String chunkMd5)
@@ -1032,6 +1053,7 @@ public class File
     /** Writes the action to the database to be replayed on Google's servers later, plays transaction on local memory **/
     void playOnDatabase(String command, String... logEntry) throws IOException
     {
+    	// TODO (smacke): does this actually have to be write-locked?
     	if(!drive.lock.isWriteLockedByCurrentThread()) throw new Error("Must acquire write lock if you're doing writes!");
     	
     	drive.getDatabase().execute("INSERT INTO UPDATELOG(COMMAND, DETAILS) VALUES(?,?)", command, new XStream().toXML(logEntry));
@@ -1241,7 +1263,7 @@ public class File
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
 
-	static void playOnRemote(Drive drive, String command, String... logEntry) throws IOException, SQLException
+	static void playOnRemote(final Drive drive, final String command, final String... logEntry) throws IOException, SQLException, ConflictingOperationInProgressException
 	{
 		if("setTitle".equals(command))
 		{
@@ -1353,31 +1375,83 @@ public class File
 		}
 		else if("trash".equals(command))
 		{
-			String googleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
-			drive.getRemote().files().trash(googleFileId).execute();
+			final File file = drive.getFile(UUID.fromString(logEntry[0]));
+			System.out.println("trash remote file " + file.getTitle());
+			try {
+                if (file.uploadLock.tryLock(file.uploadBackoff.nextBackOffMillis(), TimeUnit.MILLISECONDS)) {
+                    try {
+                    	file.uploadBackoff.reset();
+                        drive.getRemote().files().trash(file.getGoogleId()).execute();
+                    } finally {
+                        file.uploadLock.unlock();
+                    }
+                } else {
+                	throw new ConflictingOperationInProgressException();
+                }
+			} catch (InterruptedException e) {
+				throw new RuntimeException(e);
+			}
 		}
 		else if("update".equals(command) || "truncate".equals(command))
 		{
-			File file = drive.getFile(UUID.fromString(logEntry[0]));
-			file.acquireWrite();
-			try
-			{
-				file.uploadFileContentsToGoogle();
+			final File file = drive.getFile(UUID.fromString(logEntry[0]));
+			final AtomicReference<ConflictingOperationInProgressException> exnCapture = new AtomicReference<>();
+			final AtomicBoolean madeAttemptToGetLock = new AtomicBoolean(false);
+			final com.google.api.services.drive.model.File newRemoteDirectory = drive.getRemote().files().get(file.getId()).execute();
+			// all the fancy locking is mostly unnecessary, since we have # uploader threads
+			// set to 1 currently. The only time it helps is when
+			// we try to trash a file which is in the process of being uploaded.
+			// In this case, the log player will block until the upload
+			// is complete, so that the trashed file is actually trashed.
+			updaterService.submit(new Runnable() {
+				@Override
+				public void run()
+				{
+					try
+					{
+						if (file.uploadLock.tryLock(file.uploadBackoff.nextBackOffMillis(), TimeUnit.MILLISECONDS)) {
+							try {
+								synchronized(file) {
+									madeAttemptToGetLock.set(true);
+									file.notify();
+								}
+								file.uploadBackoff.reset();
+								file.uploadFileContentsToGoogle(newRemoteDirectory);
+							} catch(IOException | SQLException e) {
+								throw new RuntimeException(e);
+							} finally {
+								file.uploadLock.unlock();
+							}
+						} else {
+							exnCapture.set(new ConflictingOperationInProgressException());
+                            synchronized(file) {
+                            	madeAttemptToGetLock.set(true);
+                                file.notify();
+                            }
+						}
+					}
+					catch(InterruptedException | IOException e)
+					{
+						throw new RuntimeException(e);
+					}
+				}
+			});
+			synchronized(file) {
+				while (!madeAttemptToGetLock.get()) {
+					try
+					{
+						file.wait();
+					}
+					catch(InterruptedException e)
+					{
+						throw new RuntimeException(e);
+					}
+				}
 			}
-			catch(SQLException e)
-			{
-				throw new RuntimeException(e);
-			}
-			finally
-			{
-				file.releaseWrite();
+			if (exnCapture.get() != null) {
+				throw exnCapture.get();
 			}
 		}
-//		else if("truncate".equals(command))
-//		{
-//			// TODO: https://developers.google.com/drive/v2/reference/files/patch
-//			// no-op
-//		}
 		else if("write".equals(command))
 		{
 			// TODO: https://developers.google.com/drive/v2/reference/files/patch
@@ -1390,6 +1464,10 @@ public class File
 //			file.pokeUpdateThread(diskFile);
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
+	}
+	
+	String getGoogleId() throws IOException {
+		return getGoogleId(drive, getLocalId());
 	}
 	
 	static String getGoogleId(Drive drive, UUID localId)
@@ -1521,78 +1599,27 @@ public class File
 		}
 	}
 	
-	void pokeUpdateThread(java.io.File diskFile) {
-		System.out.println("poker attempt acquire read");
-		acquireRead();
-		fileOnDisk.set(diskFile);
-		System.out.println("poker succeed acquire read");
-		try {
-			if (updater == null) {
-				updater = new Thread(new Runnable() {
-					@Override
-					public void run()
-					{
-						while (true) {
-							try
-							{
-								Thread.sleep(1000);
-								FileUtils.copyFile(fileOnDisk.get(), getUploadFile());
-								acquireWrite();
-								try
-								{
-									File.this.uploadFileContentsToGoogle();
-									// it is crucial that we have the write lock
-									// while setting updater to null
-									File.this.updater = null;
-								}
-								finally
-								{
-									releaseWrite();
-								}
-								break;
-							}
-							catch(InterruptedException | SQLException | IOException e)
-							{
-								// reset timer, retry
-								e.printStackTrace();
-								continue;
-							}
-
-						}
-					}
-				});
-				updaterService.execute(updater);
-				System.out.println("submission complete!");
-			} else {
-				updater.interrupt();
-				System.out.println("timer restarted");
-			}
-		}
-		finally {
-			releaseRead();
-			System.out.println("updater release read");
-		}
-	}
-	
-	void uploadFileContentsToGoogle() throws IOException, SQLException {
-		// TODO (smacke): make getUploadFile non-static
-		if (!drive.lock.writeLock().isHeldByCurrentThread()) {
-			// TODO (smacke): is it possible that we can do the slow network I/O
-			// without a write lock, as long as we make sure to hold one during
-			// refresh() (for DB stuff?)
-			throw new RuntimeException("uploading should happen with lock held");
-		}
+	/**
+	 * @param newRemoteDirectory A new Google remote file for which we have called create (synchronously).
+	 * @throws IOException
+	 * @throws SQLException
+	 */
+	void uploadFileContentsToGoogle(com.google.api.services.drive.model.File newRemoteDirectory) throws IOException, SQLException {
 		System.out.println("uploading contents of " + getTitle() + " to google");
 		String type = Files.probeContentType(Paths.get(getUploadFile().getAbsolutePath()));
 		FileContent mediaContent = new FileContent(type, getUploadFile());
 
-		com.google.api.services.drive.model.File newRemoteDirectory = drive.getRemote().files().get(getId()).execute();
 		newRemoteDirectory.setMimeType(type);
 
 		Date asof = new Date();
 		newRemoteDirectory = drive.getRemote().files().update(getId(), newRemoteDirectory, mediaContent).execute();
 
-		refresh(newRemoteDirectory, asof);
+		acquireWrite();
+		try {
+			refresh(newRemoteDirectory, asof);
+		} finally {
+			releaseWrite();
+		}
 	}
 	
 	void dropFragmentsFromDb() throws IOException {

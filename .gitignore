@@ -1,5 +1,7 @@
 /bin/
 /derby.log
+gdrivefs.jar
 gdrivefs-*.deb
 gdrivefs-*.rpm
 gdrivefs-*.jar
+run
