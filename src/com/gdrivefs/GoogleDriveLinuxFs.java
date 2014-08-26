@@ -22,6 +22,7 @@ import net.fusejna.util.FuseFilesystemAdapterAssumeImplemented;
 import com.gdrivefs.internal.FileWriteCollector;
 import com.gdrivefs.simplecache.Drive;
 import com.gdrivefs.simplecache.File;
+import com.gdrivefs.util.Utils;
 import com.google.api.client.http.HttpTransport;
 
 public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
@@ -221,9 +222,16 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 				collector.flushCurrentFragmentToDb();
 			}
 
-			byte[] bytes = f.read(Math.min(size, f.getSize()-offset), offset);
-			buffer.put(bytes);
-			return bytes.length;
+			long chunkStart = offset;
+			long end = offset + Math.min(size,  f.getSize()-offset);
+			do {
+				long chunkEnd = Math.min(Utils.roundUp(chunkStart), end);
+				int len = (int)(chunkEnd - chunkStart);
+				byte[] chunk = f.read(len, chunkStart);
+				buffer.put(chunk);
+				chunkStart = chunkEnd;
+			} while (chunkStart < end);
+			return (int)(end-offset); // currently we always read exactly what is requested (up to file size)
 		}
 		catch(NoSuchElementException e)
 		{

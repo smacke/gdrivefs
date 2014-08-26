@@ -6,6 +6,7 @@ import java.nio.ByteBuffer;
 import java.util.UUID;
 
 import com.gdrivefs.simplecache.File;
+import com.gdrivefs.util.Utils;
 
 public class FileWriteCollector
 {
@@ -32,7 +33,7 @@ public class FileWriteCollector
 		}
 		
 		if(position != currentPosition) {
-			flushFragmentToDb(prevPosition, currentPosition);
+			flushFragmentToDbInChunks(prevPosition, currentPosition);
 			prevPosition = currentPosition = position;
 		}
 		delegate.getChannel().write(buf, currentPosition);
@@ -56,22 +57,26 @@ public class FileWriteCollector
 	}
 
 	public void flushCurrentFragmentToDb() throws IOException {
-		flushFragmentToDb(prevPosition, currentPosition);
+		flushFragmentToDbInChunks(prevPosition, currentPosition);
 		prevPosition = currentPosition;
 	}
 	
-	private void flushFragmentToDb(long start, long stop) throws IOException {
+	private void flushFragmentToDbInChunks(long start, long stop) throws IOException {
 		if (start > stop) {
 			throw new IllegalArgumentException(start + ", " + stop);
 		}
 		if (start == stop) {
 			return;
 		}
-		long position = start;
-		int len = (int)(stop-start);
-		byte[] fragment = new byte[len];
-		delegate.seek(position);
-		delegate.read(fragment, 0, len);
-		cachedFile.write(fragment, position);
+		delegate.seek(start);
+		long chunkStart = start;
+		do {
+			long chunkEnd = Math.min(Utils.roundUp(chunkStart), stop);
+			int len = (int)(chunkEnd - chunkStart);
+			byte[] chunk = new byte[len];
+			delegate.read(chunk, 0, len);
+			cachedFile.write(chunk, chunkStart);
+			chunkStart = chunkEnd;
+		} while (chunkStart < stop);
 	}
 }

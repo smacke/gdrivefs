@@ -13,7 +13,6 @@ import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
-import java.util.Comparator;
 import java.util.Date;
 import java.util.GregorianCalendar;
 import java.util.List;
@@ -56,7 +55,8 @@ import com.thoughtworks.xstream.XStream;
  */
 public class File
 {
-	private static final int MAX_UPDATE_THREADS = 1; // asynchronous uploads happen synchronously
+	public static final int FRAGMENT_BOUNDARY = 1<<25; //32 MiB
+	private static final int MAX_UPDATE_THREADS = 5;
 	static ExecutorService updaterService = Executors.newFixedThreadPool(MAX_UPDATE_THREADS);
 
 	String googleFileId;
@@ -663,7 +663,7 @@ public class File
 		}
 	}
 	
-    public byte[] read(final long size, final long offset) throws IOException
+    public byte[] read(final int size, final long offset) throws IOException
     {
 		acquireRead();
 		try
