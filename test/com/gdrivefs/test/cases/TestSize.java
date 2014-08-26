@@ -62,8 +62,9 @@ public class TestSize
 				String dataToWrite = "Hello World!";
 				for(int i = 0; i < dataToWrite.length(); i++)
 				{
+					Assert.assertEquals(i, helloFile.length());
 					fileHandle.write(dataToWrite.charAt(i));
-					Assert.assertEquals(i, helloFile.length()); // FileOutputStream is not buffered, so size should have changed
+					Assert.assertEquals(i+1, helloFile.length()); // FileOutputStream is not buffered, so size should have changed
 				}
 			}
 			finally

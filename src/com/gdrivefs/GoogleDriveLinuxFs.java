@@ -114,7 +114,15 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 			}
 			else
 			{
-				stat.setMode(NodeType.FILE, true, true, false, false, false, false, false, false, false).size(f.getSize()).mtime(f.getModified().getTime()/1000);
+				long size = f.getSize();
+				
+				{ // There may be some unflushed writes that may have extended file length and need to be taken into account
+					FileWriteCollector wc = openFiles.get(f);
+					if(wc != null) size = Math.max(size, wc.getCurrentPosition());
+					else System.err.println("write colelctor for "+path+" is null, size is "+size);
+				}
+				
+				stat.setMode(NodeType.FILE, true, true, false, false, false, false, false, false, false).size(size).mtime(f.getModified().getTime()/1000);
 				return 0;
 			}
 		}

@@ -55,6 +55,11 @@ public class FileWriteCollector
 		currentPosition = -1;
 		return diskFile;
 	}
+	
+	public long getCurrentPosition()
+	{
+		return currentPosition;
+	}
 
 	public void flushCurrentFragmentToDb() throws IOException {
 		flushFragmentToDbInChunks(prevPosition, currentPosition);
