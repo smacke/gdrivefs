@@ -1023,8 +1023,8 @@ public class File
 		long currentPosition = start;
 		for(DatabaseRow fragment : fragments)
 		{
-			int startbyte = fragment.getInteger("STARTBYTE");
-			int endbyte = fragment.getInteger("ENDBYTE");
+			long startbyte = fragment.getLong("STARTBYTE");
+			long endbyte = fragment.getLong("ENDBYTE");
 			String chunkMd5 = fragment.getString("CHUNKMD5");
 			java.io.File cachedChunkFile = File.getCacheFile(chunkMd5);
 			
