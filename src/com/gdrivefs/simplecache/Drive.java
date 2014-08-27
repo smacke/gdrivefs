@@ -4,7 +4,6 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.sql.SQLException;
 import java.util.Date;
-import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -14,7 +13,6 @@ import org.apache.derby.jdbc.EmbeddedDriver;
 
 import com.gdrivefs.simplecache.internal.DriveExecutorService;
 import com.google.api.client.http.HttpTransport;
-import com.google.api.services.drive.model.About;
 import com.google.api.services.drive.model.Property;
 import com.google.common.base.Supplier;
 import com.google.common.base.Suppliers;
