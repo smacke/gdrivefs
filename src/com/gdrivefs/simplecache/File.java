@@ -933,13 +933,13 @@ public class File
     	FileOutputStream out = null;
     	try {
     		out = new FileOutputStream(uploadFile);
-    		int position = 0;
+    		long position = 0;
     		for (DatabaseRow row : rows) {
-    			int startByte = row.getInteger("STARTBYTE");
+    			long startByte = row.getLong("STARTBYTE");
     			if (startByte > position) {
     				throw new Error("unexpected gap");
     			}
-    			int endByte = row.getInteger("ENDBYTE");
+    			long endByte = row.getLong("ENDBYTE");
     			if (endByte <= position) {
     				continue;
     			}
@@ -948,7 +948,7 @@ public class File
     			if (chunk.length != endByte-startByte) {
     				throw new Error("unexpected byte array from file");
     			}
-    			out.write(chunk, position-startByte, endByte-position);
+    			out.write(chunk, (int)(position-startByte), (int)(endByte-position));
     			position += (endByte - position);
     			if (position == getSize()) {
     				break;
