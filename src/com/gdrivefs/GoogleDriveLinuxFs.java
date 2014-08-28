@@ -456,7 +456,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		{
 			if(collector == null) return 0;
 			collector.flushCurrentFragmentToDb();
-			fileHandles.get(info.fh()).update();
+			fileHandles.get(info.fh()).update(false);
 			openFiles.remove(fileHandles.get(info.fh()));
 			collector.getFile(); // TODO: Getters shouldn't have visible side effects; consider adding a close() or flush() method.
 			return 0;

@@ -1,7 +1,6 @@
 package com.gdrivefs.simplecache;
 
 import java.io.ByteArrayOutputStream;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -78,6 +77,7 @@ public class File
 	DuplicateRejectingList children;
 	DuplicateRejectingList parents;
 	final Lock uploadLock = new ReentrantLock();
+	final Lock scratchSpaceLock = new ReentrantLock(); // MUST ALWAYS BE ACQUIRED BEFORE WRITELOCK IF ACQUIRED IN SUCCESSION
 	final ExponentialBackOff uploadBackoff = new ExponentialBackOff.Builder()
 		    .setInitialIntervalMillis(500)
 		    .setMaxElapsedTimeMillis(900000)
@@ -98,7 +98,7 @@ public class File
 					// schedule the upload if it's been 10 seconds
 					try
 					{
-						update();
+						update(true);
 					}
 					catch(IOException e)
 					{
@@ -665,27 +665,56 @@ public class File
 		}
 	}
 
-	public void update() throws IOException
+	public void update(boolean force) throws IOException
 	{
-		acquireWrite();
-		try
-		{
+		if (!force && !freshWrite.getAndSet(false)) {
+			// Nothing has changed (locally at least),
+			// and we're not forcing an upload, so return.
+			return;
+		}
+
+		// TODO this is a hack to prevent any downloads
+		// from overwriting any writes happening concurrently
+		scratchSpaceLock.lock();
+		try {
             fillInGapsBetween(0, getSize());
             storeFragmentsToUploadFile();
 
-            FileInputStream stream = new FileInputStream(getUploadFile());
-            String md5;
-            try { md5 = DigestUtils.md5Hex(stream); }
-            finally { stream.close(); }
-            
-            // don't bother to do the upload if nothing changed
-            if (md5.equals(fileMd5)) {
-            	return;
-            }
-            // set the new md5
-            fileMd5 = md5;
+            acquireWrite();
+		} finally {
+			scratchSpaceLock.unlock();
+		}
+		try
+		{
 
-			String[] logEntry = new String[]{this.getLocalId().toString(), Long.toString(getUploadFile().length()), md5};
+			// TODO md5 computation is pretty expensive for large files, actually,
+			// and shouldn't happen behind a writelock. What we really want to do
+			// is keep track of md5's in the fragments table, associating with each
+			// chunk the md5 of the file at the time that chunk was definitely part
+			// of the file. We can then download things not behind any lock, and
+			// detect when things got out of sync while downloading somehow. This will
+			// likely also involve looking up lastModified timestamps to prevent the
+			// situation on the google end where we have A -> B -> A.
+//            FileInputStream stream = new FileInputStream(getUploadFile());
+//            String md5;
+//            try { md5 = DigestUtils.md5Hex(stream); }
+//            finally { stream.close(); }
+//            
+//            // don't bother to do the upload if nothing changed
+//            if (md5.equals(fileMd5)) {
+//            	return;
+//            }
+//            // set the new md5
+//            fileMd5 = md5;
+
+			// N.B. (smacke): there's a slight race condition here, in that
+			// by the time the logPlayer starts playing the upload file, somebody
+			// else could have come in and updated the file. This is okay, though -- we'll
+			// just be uploading a more up-to-date file to Google. The only caveat
+			// is that we have to make sure to scratch-space-lock the actual upload
+			// to google as well, since otherwise it could be changing while we're
+			// uploading it.
+			String[] logEntry = new String[]{this.getLocalId().toString(), Long.toString(getUploadFile().length()), null};
 			playOnDatabase("update", logEntry);
 			playOnMetadata("update", logEntry);
 		}
@@ -742,18 +771,27 @@ public class File
     public void write(byte[] bytes, final long offset) throws IOException
     {
     	String chunkMd5 = DigestUtils.md5Hex(bytes);
-		acquireWrite();
-		try
-		{
-			System.out.printf("write %d bytes at offset %d for file %s\n", bytes.length, offset, getTitle());
-			storeFragment(null, offset, bytes);
-			playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
-			playOnMetadata("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
-		}
-		finally
-		{
-			releaseWrite();
-		}
+    	// this way, a download coming in won't overwrite the
+    	// things we are about to write to the fragments table.
+    	scratchSpaceLock.lock();
+    	try {
+            acquireWrite();
+            try
+            {
+                System.out.printf("write %d bytes at offset %d for file %s\n", bytes.length, offset, getTitle());
+                lastWriteTime = System.currentTimeMillis();
+                freshWrite.set(true);
+                storeFragment(null, offset, bytes);
+                playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
+                playOnMetadata("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
+            }
+            finally
+            {
+                releaseWrite();
+            }
+    	} finally {
+    		scratchSpaceLock.unlock();
+    	}
 	}
 
     /**
@@ -1451,7 +1489,13 @@ public class File
 									file.notify();
 								}
 								file.uploadBackoff.reset();
-								file.uploadFileContentsToGoogle(newRemoteDirectory);
+								file.scratchSpaceLock.lock(); // expected behavior: writes to large files during uploads will block,
+																// for those big files only
+								try {
+									file.uploadFileContentsToGoogle(newRemoteDirectory);
+								} finally {
+									file.scratchSpaceLock.unlock();
+								}
 							} catch(IOException | SQLException e) {
 								throw new RuntimeException(e);
 							} finally {
@@ -1489,9 +1533,10 @@ public class File
 		}
 		else if("write".equals(command))
 		{
-			final File file = drive.getFile(UUID.fromString(logEntry[0]));
-			file.lastWriteTime = System.currentTimeMillis();
-			file.freshWrite.set(true);
+//			final File file = drive.getFile(UUID.fromString(logEntry[0]));
+//			file.lastWriteTime = System.currentTimeMillis();
+//			file.freshWrite.set(true);
+			// This actually needs to happen at the time of the write
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
