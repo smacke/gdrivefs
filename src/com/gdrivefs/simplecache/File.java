@@ -90,7 +90,7 @@ public class File
 		    .build();
 	volatile long lastWriteTime=-1;
 	AtomicBoolean freshWrite = new AtomicBoolean(false);
-	ScheduledExecutorService writeCheckService = Executors.newScheduledThreadPool(1);
+	static ScheduledExecutorService writeCheckService = Executors.newScheduledThreadPool(1);
 	{
 		writeCheckService.scheduleAtFixedRate(new Runnable() {
 
