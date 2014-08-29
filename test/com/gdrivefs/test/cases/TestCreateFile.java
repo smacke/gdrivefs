@@ -43,7 +43,7 @@ public class TestCreateFile
 		{
 			File test = builder.cleanDriveDirectory();
 			Assert.assertEquals(0, test.getChildren().size());
-			File noise = test.createFile("hello.txt");
+			test.createFile("hello.txt");
 			Assert.assertEquals(1, test.getChildren().size());
 			builder.flush();
 			Assert.assertEquals(1, test.getChildren().size());
