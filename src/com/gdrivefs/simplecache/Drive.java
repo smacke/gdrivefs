@@ -10,6 +10,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.apache.derby.jdbc.ClientDriver;
 import org.apache.derby.jdbc.EmbeddedDriver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.gdrivefs.simplecache.internal.DriveExecutorService;
 import com.google.api.client.http.HttpTransport;
@@ -37,6 +39,7 @@ public class Drive implements Closeable
 	private Database db;
     private HttpTransport transport;
 	private com.google.api.services.drive.Drive remote;
+    Logger logger = LoggerFactory.getLogger(Drive.class);
 	
 	LoadingCache<String, File> googleFiles;
 	LoadingCache<UUID, File> unsyncedFiles;
@@ -52,6 +55,7 @@ public class Drive implements Closeable
 		{
 			try
 			{
+				
 				return getRemote().about().get().execute().getRootFolderId();
 			}
 			catch(IOException e2)
@@ -390,6 +394,7 @@ public class Drive implements Closeable
 	public void close() throws IOException
 	{
 		if(db == null) return; // already closed
+		logger.info("Closing drive: {}", this);
 		
 		logPlayer.shutdownNow();
 		fileUpdateWorker.shutdownNow();
@@ -409,5 +414,6 @@ public class Drive implements Closeable
 		
 		db.close();
 		db = null;
+		logger.info("Drive closed: {}", this);
 	}
 }

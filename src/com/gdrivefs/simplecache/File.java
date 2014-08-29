@@ -30,6 +30,8 @@ import javax.annotation.Nullable;
 
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.gdrivefs.ConflictingOperationInProgressException;
 import com.google.api.client.http.FileContent;
@@ -55,6 +57,7 @@ import com.thoughtworks.xstream.XStream;
  */
 public class File
 {
+    private static Logger logger = LoggerFactory.getLogger(File.class);
 	public static final int FRAGMENT_BOUNDARY = 1<<25; //32 MiB
 	private static final int MAX_UPDATE_THREADS = 5;
 	static ExecutorService updaterService = Executors.newFixedThreadPool(MAX_UPDATE_THREADS);
@@ -142,6 +145,7 @@ public class File
 			List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", googleFileId);
 			if(rows.size() == 0)
 			{
+				logger.debug("Requesting file metadata from Google for file id: {}", googleFileId);
 				Date asof = new Date();
 				com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(googleFileId).execute();
 				try { refresh(metadata, asof); }
@@ -192,6 +196,7 @@ public class File
 	
 	public void refresh() throws IOException
 	{
+		logger.debug("Refreshing: {} {}", googleFileId, localFileId);
 		acquireWrite();
 		try
 		{
@@ -376,6 +381,7 @@ public class File
 	
 	private void updateChildrenFromRemote()
 	{
+		logger.debug("Updating children of {} from remote", googleFileId);
 		if(children != null && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Children cached, so doibng a remote fetch require a write lock!");
 
 		try
@@ -1338,6 +1344,7 @@ public class File
 
 	static void playOnRemote(final Drive drive, final String command, final String... logEntry) throws IOException, SQLException, ConflictingOperationInProgressException
 	{
+		logger.debug("Playing on remote: ", command, Arrays.toString(logEntry));
 		if("setTitle".equals(command))
 		{
 			// Perform update
@@ -1482,6 +1489,7 @@ public class File
 				{
 					try
 					{
+						logger.info("Attempting to {} {}", command, file.getId());
 						if (file.uploadLock.tryLock(file.uploadBackoff.nextBackOffMillis(), TimeUnit.MILLISECONDS)) {
 							try {
 								synchronized(file) {
@@ -1503,6 +1511,7 @@ public class File
 							}
 						} else {
 							exnCapture.set(new ConflictingOperationInProgressException());
+							logger.info("Conflict while uploading file: "+file.getGoogleId(), exnCapture.get());
                             synchronized(file) {
                             	madeAttemptToGetLock.set(true);
                                 file.notify();
@@ -1681,6 +1690,7 @@ public class File
 	 */
 	void uploadFileContentsToGoogle(com.google.api.services.drive.model.File newRemoteDirectory) throws IOException, SQLException {
 		System.out.println("uploading contents of " + getTitle() + " to google");
+		logger.info("uploading contents of {} ({}) to google", getId(), getTitle());
 		String type = Files.probeContentType(Paths.get(getUploadFile().getAbsolutePath()));
 		FileContent mediaContent = new FileContent(type, getUploadFile());
 
@@ -1688,6 +1698,8 @@ public class File
 
 		Date asof = new Date();
 		newRemoteDirectory = drive.getRemote().files().update(getId(), newRemoteDirectory, mediaContent).execute();
+
+		logger.info("done uploading contents of {} ({}) to google", getId(), getTitle());
 
 		acquireWrite();
 		try {
