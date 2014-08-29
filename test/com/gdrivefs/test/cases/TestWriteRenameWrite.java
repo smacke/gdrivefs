@@ -9,17 +9,17 @@ import net.fusejna.FuseException;
 import org.apache.commons.io.FileUtils;
 import org.junit.Assert;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import com.gdrivefs.test.util.DriveBuilder;
+import com.gdrivefs.test.util.GoogleFilesystemRunner;
 
+@RunWith(GoogleFilesystemRunner.class)
 public class TestWriteRenameWrite
 {
 	@Test
-	public void test() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	public void test(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			{
 				java.io.File test = builder.cleanMountedDirectory();
 				java.io.File f1 = new java.io.File(test, "f1.txt");
@@ -48,10 +48,5 @@ public class TestWriteRenameWrite
 				Assert.assertEquals("barbar", FileUtils.readFileToString(f1));
 				Assert.assertEquals("foofoo", FileUtils.readFileToString(f2));
 			}
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 }

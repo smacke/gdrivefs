@@ -14,17 +14,17 @@ import net.fusejna.FuseException;
 import org.apache.commons.io.FileUtils;
 import org.junit.Assert;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import com.gdrivefs.test.util.DriveBuilder;
+import com.gdrivefs.test.util.GoogleFilesystemRunner;
 
+@RunWith(GoogleFilesystemRunner.class)
 public class RandomAccessTests extends Assert
 {
 	@Test
-	public void testRandomAccessReads() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	public void testRandomAccessReads(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			{
 				java.io.File test = builder.cleanMountedDirectory();
 				java.io.File file = new java.io.File(test, "hello.txt");
@@ -50,19 +50,11 @@ public class RandomAccessTests extends Assert
 					raf.close();
 				}
 			}
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void stressTestRandomAccess() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	public void stressTestRandomAccess(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			java.io.File test = builder.cleanMountedDirectory();
 			java.io.File file = new java.io.File(test, "hello.txt");
 
@@ -95,17 +87,11 @@ public class RandomAccessTests extends Assert
 			{
 				raf.close();
 			}
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void stressTestRandomAccessConcurrent() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	public void stressTestRandomAccessConcurrent(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
 	{
-		DriveBuilder builder = new DriveBuilder();
 		ExecutorService service = null;
 		final AtomicReference<AssertionError> exnCapture = new AtomicReference<>();
 		try
@@ -172,7 +158,6 @@ public class RandomAccessTests extends Assert
                 service.shutdown();
                 service.awaitTermination(1, TimeUnit.DAYS);
 			}
-			builder.close();
 		}
 		if (exnCapture.get() != null) {
 			throw exnCapture.get();

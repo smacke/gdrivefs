@@ -5,33 +5,25 @@ import java.security.GeneralSecurityException;
 
 import org.junit.Assert;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import com.gdrivefs.simplecache.File;
 import com.gdrivefs.test.util.DriveBuilder;
+import com.gdrivefs.test.util.GoogleFilesystemRunner;
 
+@RunWith(GoogleFilesystemRunner.class)
 public class TestChildren
 {
 	@Test
-	public void testTrivial() throws IOException, GeneralSecurityException, InterruptedException
+	public void testTrivial(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 			Assert.assertEquals(0, test.getChildren().size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testCreateChild() throws IOException, GeneralSecurityException, InterruptedException
+	public void testCreateChild(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 	
 			Assert.assertEquals(0, test.getChildren().size());
@@ -42,19 +34,11 @@ public class TestChildren
 			
 			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals(1, test.getChildren().size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testGetChildren() throws IOException, GeneralSecurityException, InterruptedException
+	public void testGetChildren(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 	
 			Assert.assertEquals(0, test.getChildren().size());
@@ -62,19 +46,11 @@ public class TestChildren
 			test.mkdir("bar");
 			test.mkdir("noise");
 			Assert.assertEquals(1, test.getChildren("noise").size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testDuplicates() throws IOException, GeneralSecurityException, InterruptedException
+	public void testDuplicates(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 	
 			Assert.assertEquals(0, test.getChildren().size());
@@ -90,19 +66,11 @@ public class TestChildren
 			builder.flush();
 			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals(3, test.getChildren("noise").size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testNested() throws IOException, GeneralSecurityException, InterruptedException
+	public void testNested(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 	
 			File foo = test.mkdir("foo");
@@ -113,19 +81,11 @@ public class TestChildren
 			builder.flush();
 			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals(2, test.getChildren().get(0).getChildren().size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testAddChild() throws IOException, GeneralSecurityException, InterruptedException
+	public void testAddChild(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 	
 			File foo = test.mkdir("foo");
@@ -141,19 +101,11 @@ public class TestChildren
 			
 			Assert.assertEquals(2, test.getChildren().size());
 			Assert.assertEquals(1, foo.getChildren().size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testMove() throws IOException, GeneralSecurityException, InterruptedException
+	public void testMove(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 	
 			File foo = test.mkdir("foo");
@@ -171,19 +123,11 @@ public class TestChildren
 			
 			Assert.assertEquals(1, test.getChildren().size());
 			Assert.assertEquals(1, foo.getChildren().size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testLoop() throws IOException, GeneralSecurityException, InterruptedException
+	public void testLoop(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 		
 			File foo = test.mkdir("foo");
@@ -203,19 +147,11 @@ public class TestChildren
 			{
 				/* expected, SUCCESS */
 			}
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testCacheReplayConsistency() throws IOException, GeneralSecurityException, InterruptedException
+	public void testCacheReplayConsistency(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 			
 			File parent = test.mkdir("parent");
@@ -225,10 +161,5 @@ public class TestChildren
 			parent.refresh();
 			
 			Assert.assertEquals(10, parent.getChildren().size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 }

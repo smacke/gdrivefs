@@ -8,18 +8,18 @@ import net.fusejna.FuseException;
 import org.apache.commons.io.FileUtils;
 import org.junit.Assert;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import com.gdrivefs.simplecache.File;
 import com.gdrivefs.test.util.DriveBuilder;
+import com.gdrivefs.test.util.GoogleFilesystemRunner;
 
+@RunWith(GoogleFilesystemRunner.class)
 public class PerfTests
 {
 	@Test
-	public void testChildrenOfEmptyDirectory() throws IOException, GeneralSecurityException, InterruptedException
+	public void testChildrenOfEmptyDirectory(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 			File directory = test.mkdir("MyAwesomeDirectory");
 			
@@ -35,19 +35,11 @@ public class PerfTests
 			}
 			System.out.println(count);
 			Assert.assertTrue(count > 10000);
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testCachedReads() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	public void testCachedReads(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			java.io.File test = builder.cleanMountedDirectory();
 			java.io.File hello = new java.io.File(test, "hello.txt");
 			FileUtils.write(hello, "Hello World!");
@@ -65,19 +57,11 @@ public class PerfTests
 			}
 			System.out.println(count);
 			Assert.assertTrue(count > 25);
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testParents() throws IOException, GeneralSecurityException, InterruptedException
+	public void testParents(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 			File directory = test.mkdir("MyAwesomeDirectory");
 			
@@ -93,19 +77,11 @@ public class PerfTests
 			}
 			System.out.println(count);
 			Assert.assertTrue(count > 10000);
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testMkdir() throws IOException, GeneralSecurityException, InterruptedException
+	public void testMkdir(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 			File directory = test.mkdir("MyAwesomeDirectory");
 			
@@ -122,10 +98,5 @@ public class PerfTests
 				directory.mkdir(Integer.toString(i));
 			
 			Assert.assertEquals(10, directory.getChildren().size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 }

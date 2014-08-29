@@ -5,18 +5,18 @@ import java.security.GeneralSecurityException;
 
 import org.junit.Assert;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import com.gdrivefs.simplecache.File;
 import com.gdrivefs.test.util.DriveBuilder;
+import com.gdrivefs.test.util.GoogleFilesystemRunner;
 
+@RunWith(GoogleFilesystemRunner.class)
 public class TestParents
 {
 	@Test
-	public void testSimple() throws IOException, GeneralSecurityException, InterruptedException
+	public void testSimple(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 
 			test.mkdir("foo");
@@ -26,19 +26,11 @@ public class TestParents
 
 			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals(1, test.getChildren("foo").get(0).getParents().size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testMultipleParents() throws IOException, GeneralSecurityException, InterruptedException
+	public void testMultipleParents(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 
 			File foo = test.mkdir("foo");
@@ -49,19 +41,11 @@ public class TestParents
 			bar.addChild(noise);
 			test.removeChild(noise);
 			Assert.assertEquals(2, noise.getParents().size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testDuplicates() throws IOException, GeneralSecurityException, InterruptedException
+	public void testDuplicates(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 
 			Assert.assertEquals(0, test.getChildren().size());
@@ -87,10 +71,5 @@ public class TestParents
 
 			test = builder.uncleanDriveDirectory();
 			Assert.assertEquals(3, test.getChildren("noise").get(2).getChildren("foo").get(0).getParents().size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 }

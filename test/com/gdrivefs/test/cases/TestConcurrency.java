@@ -13,18 +13,18 @@ import java.util.concurrent.Future;
 
 import org.junit.Assert;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import com.gdrivefs.simplecache.File;
 import com.gdrivefs.test.util.DriveBuilder;
+import com.gdrivefs.test.util.GoogleFilesystemRunner;
 
+@RunWith(GoogleFilesystemRunner.class)
 public class TestConcurrency
 {
 	@Test
-	public void concurrentDirectoryManipulationTest() throws IOException, GeneralSecurityException, InterruptedException, ExecutionException
+	public void concurrentDirectoryManipulationTest(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException, ExecutionException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			final File test = builder.cleanDriveDirectory();
 
 			ExecutorService worker = Executors.newFixedThreadPool(10);
@@ -61,11 +61,6 @@ public class TestConcurrency
 
 			for(Future<Boolean> future : futures)
 				Assert.assertTrue(future.get());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 }

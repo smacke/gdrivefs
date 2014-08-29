@@ -5,18 +5,18 @@ import java.security.GeneralSecurityException;
 
 import org.junit.Assert;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import com.gdrivefs.simplecache.File;
 import com.gdrivefs.test.util.DriveBuilder;
+import com.gdrivefs.test.util.GoogleFilesystemRunner;
 
+@RunWith(GoogleFilesystemRunner.class)
 public class TestCreateFile
 {
 	@Test
-	public void testTrivial() throws IOException, GeneralSecurityException, InterruptedException
+	public void testTrivial(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 			Assert.assertEquals(0, test.getChildren().size());
 			File noise = test.createFile("hello.txt");
@@ -28,19 +28,11 @@ public class TestCreateFile
 			test = builder.uncleanDriveDirectory();
 			test.refresh();
 			Assert.assertEquals(0, test.getChildren().size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	@Test
-	public void testChangePersistence() throws IOException, GeneralSecurityException, InterruptedException
+	public void testChangePersistence(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			File test = builder.cleanDriveDirectory();
 			Assert.assertEquals(0, test.getChildren().size());
 			test.createFile("hello.txt");
@@ -50,10 +42,5 @@ public class TestCreateFile
 			test = builder.uncleanDriveDirectory();
 			test.refresh();
 			Assert.assertEquals(1, test.getChildren().size());
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 }

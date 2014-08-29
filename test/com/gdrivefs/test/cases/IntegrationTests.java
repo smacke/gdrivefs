@@ -10,17 +10,17 @@ import net.fusejna.FuseException;
 import org.apache.commons.io.FileUtils;
 import org.junit.Assert;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import com.gdrivefs.test.util.DriveBuilder;
+import com.gdrivefs.test.util.GoogleFilesystemRunner;
 
+@RunWith(GoogleFilesystemRunner.class)
 public class IntegrationTests
 {
 	@Test
-	public void testTrivial() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	public void testTrivial(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			{
 				File test = builder.cleanMountedDirectory();
 				File helloFile = new File(test, "hello.txt");
@@ -34,19 +34,11 @@ public class IntegrationTests
 				System.out.println(Arrays.toString(test.listFiles()));
 				Assert.assertEquals(1, test.listFiles().length);
 			}
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 	
 	@Test
-	public void testFileRead() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	public void testFileRead(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			{
 				File test = builder.cleanMountedDirectory();
 				File helloFile = new File(test, "hello.txt");
@@ -60,19 +52,11 @@ public class IntegrationTests
 				File helloFile = new File(test, "hello.txt");
 				Assert.assertEquals("hello world", FileUtils.readFileToString(helloFile));
 			}
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 	
 	@Test
-	public void testMove() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	public void testMove(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			{
 				File test = builder.cleanMountedDirectory();
 				File src = new File(test, "src");
@@ -92,20 +76,12 @@ public class IntegrationTests
 				
 				Assert.assertEquals("hello world", FileUtils.readFileToString(dst));
 			}
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	
 	@Test
-	public void testMkdirs() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	public void testMkdirs(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			{
 				File test = builder.cleanMountedDirectory();
 				
@@ -122,11 +98,6 @@ public class IntegrationTests
 				
 				Assert.assertEquals("noise", test.listFiles()[0].listFiles()[0].listFiles()[0].getName());
 			}
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 
 	

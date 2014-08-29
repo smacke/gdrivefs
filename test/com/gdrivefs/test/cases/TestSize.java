@@ -10,17 +10,17 @@ import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.FileUtils;
 import org.junit.Assert;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import com.gdrivefs.test.util.DriveBuilder;
+import com.gdrivefs.test.util.GoogleFilesystemRunner;
 
+@RunWith(GoogleFilesystemRunner.class)
 public class TestSize
 {
 	@Test
-	public void testTruncateChangesSize() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	public void testTruncateChangesSize(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			{
 				java.io.File test = builder.cleanMountedDirectory();
 				java.io.File helloFile = new java.io.File(test, "hello.txt");
@@ -40,19 +40,11 @@ public class TestSize
 //				Assert.assertEquals(14, helloFile.getSize());
 //				Assert.assertNotEquals(DigestUtils.md5Hex("123456789"), helloFile.getMd5Checksum());
 			}
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 	
 	@Test
-	public void testWriteChangesSize() throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
+	public void testWriteChangesSize(DriveBuilder builder) throws IOException, GeneralSecurityException, InterruptedException, UnsatisfiedLinkError, FuseException
 	{
-		DriveBuilder builder = new DriveBuilder();
-		try
-		{
 			java.io.File test = builder.cleanMountedDirectory();
 			java.io.File helloFile = new java.io.File(test, "hello.txt");
 			
@@ -71,10 +63,5 @@ public class TestSize
 			{
 				fileHandle.close();
 			}
-		}
-		finally
-		{
-			builder.close();
-		}
 	}
 }
