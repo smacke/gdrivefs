@@ -12,6 +12,7 @@ import net.fusejna.DirectoryFiller;
 import net.fusejna.ErrorCodes;
 import net.fusejna.FuseJna;
 import net.fusejna.StructFuseFileInfo.FileInfoWrapper;
+import net.fusejna.StructFuseFileInfo.FileInfoWrapper.OpenMode;
 import net.fusejna.StructStat.StatWrapper;
 import net.fusejna.XattrFiller;
 import net.fusejna.XattrListFiller;
@@ -373,6 +374,8 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public int truncate(final String path, final long offset)
 	{
+		// TODO: verify that the file at path is writable, in
+		// accordance w/ man pages. Perhaps this is always the case?
 		try {
 			getPath(path).truncate(offset);
 			FileWriteCollector collector = openFiles.get(path);
@@ -451,13 +454,20 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	@Override
 	public synchronized int flush(String path, FileInfoWrapper info)
 	{
-		FileWriteCollector collector = openFiles.get(fileHandles.get(info.fh()));
+		File f = fileHandles.get(info.fh());
+		if (f == null) {
+			return ErrorCodes.EBADF(); // bad fd
+		}
+		FileWriteCollector collector = openFiles.get(f);
+        if(collector == null) {
+        	// then there's definitely nothing to flush
+            return 0;
+        }
 		try
 		{
-			if(collector == null) return 0;
 			collector.flushCurrentFragmentToDb();
-			fileHandles.get(info.fh()).update(false);
-			openFiles.remove(fileHandles.get(info.fh()));
+			f.update(false);
+			openFiles.remove(f);
 			collector.getFile(); // TODO: Getters shouldn't have visible side effects; consider adding a close() or flush() method.
 			return 0;
 		}
@@ -550,6 +560,46 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	}
 	
 	@Override
+	public int ftruncate(String path, long offset, FileInfoWrapper info)
+	{
+		/*
+		 * N.B. from man pages:
+		 * With  ftruncate(),  the file must be open for writing; with truncate(), the file
+       	 * must be writable.
+		 */
+		if ((info.openMode().getBits() & OpenMode.WRITEONLY.getBits()) > 0) {
+			return truncate(path, offset);
+		} else {
+			return ErrorCodes.EACCES();
+		}
+	}
+
+	/**
+	 * According to fuse documentation, this is always
+	 * preceded by a flush().
+	 * Ref: http://fuse.sourceforge.net/doxygen/structfuse__operations.html
+	 */
+	@Override
+	public int release(String path, FileInfoWrapper info)
+	{
+		File f = fileHandles.remove(info.fh());
+		if (f == null) {
+			return ErrorCodes.EBADF(); // bad fd
+		}
+		try
+		{
+			f.close();
+		}
+		catch(IOException e)
+		{
+			e.printStackTrace();
+			return ErrorCodes.EIO();
+		}
+		openFiles.remove(f);
+		return 0;
+	}
+	
+	@Override
 	public void afterUnmount(java.io.File oldMountPoint)
 	{
 		try
@@ -569,7 +619,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 		
 		synchronized(this) { notifyAll(); }
 	}
-	
+
 	/**
 	 * Hack to support slashes in file names (swap in and out a nearly identical UTF-8 character)
 	 * @param s input string
@@ -578,5 +628,4 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 	private static String forwardSlashHack(String s) {
 		return s.replaceAll("/", IDENTICAL_FORWARD_SLASH_CHARACTER);
 	}
-	
 }

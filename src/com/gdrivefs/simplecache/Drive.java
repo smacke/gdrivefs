@@ -138,7 +138,9 @@ public class Drive implements Closeable
 		new java.io.File(home, "uploads").mkdirs();
 		new java.io.File(home, "auth").mkdirs();
 		
-		googleFiles = CacheBuilder.newBuilder().softValues().build(new CacheLoader<String, File>(){@Override
+		googleFiles = CacheBuilder.newBuilder()
+				.softValues()
+				.build(new CacheLoader<String, File>(){@Override
 		public File load(String id) throws Exception
 		{
 			// TODO Auto-generated method stub
@@ -197,7 +199,7 @@ public class Drive implements Closeable
 			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
 			
 			File file = googleFiles.getIfPresent(remoteFile.getId());
-			if(file == null && remoteFile.getProperties() != null)
+			if(file == null && remoteFile.getProperties() != null) {
 				for(Property property : remoteFile.getProperties())
 				{
 					if("com.gdrivefs.id".equals(property.getKey()))
@@ -211,6 +213,7 @@ public class Drive implements Closeable
 						}
 					}
 				}
+			}
 			if(file == null && remoteFile.getDescription() != null && remoteFile.getDescription().startsWith("gdrivefsid="))
 			{
 				

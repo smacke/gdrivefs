@@ -1,6 +1,7 @@
 package com.gdrivefs.simplecache;
 
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -11,14 +12,13 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Calendar;
 import java.util.Date;
-import java.util.GregorianCalendar;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -55,7 +55,7 @@ import com.thoughtworks.xstream.XStream;
  * but provides a clean interface for performing reads and writes
  * through the localhost cache layer.
  */
-public class File
+public class File implements Closeable
 {
     private static Logger logger = LoggerFactory.getLogger(File.class);
 	public static final int FRAGMENT_BOUNDARY = 1<<25; //32 MiB
@@ -90,14 +90,16 @@ public class File
 		    .build();
 	volatile long lastWriteTime=-1;
 	AtomicBoolean freshWrite = new AtomicBoolean(false);
+	Future<?> writeCheckFuture;
 	static ScheduledExecutorService writeCheckService = Executors.newScheduledThreadPool(1);
 	{
-		writeCheckService.scheduleAtFixedRate(new Runnable() {
+		writeCheckFuture = writeCheckService.scheduleAtFixedRate(new Runnable() {
 
 			@Override
 			public void run()
 			{
-				if (System.currentTimeMillis() - lastWriteTime > WRITE_THRESHOLD_MILLIS && freshWrite.getAndSet(false)) {
+				if (System.currentTimeMillis() - lastWriteTime > WRITE_THRESHOLD_MILLIS && 
+						freshWrite.getAndSet(false)) {
 					// schedule the upload if it's been 10 seconds
 					try
 					{
@@ -112,6 +114,8 @@ public class File
 			
 		}, WRITE_THRESHOLD_MILLIS, WRITE_THRESHOLD_MILLIS, TimeUnit.MILLISECONDS);
 	}
+	
+	private boolean isOpen = true;
 	
 	File(Drive drive, String id)
 	{
@@ -382,7 +386,7 @@ public class File
 	private void updateChildrenFromRemote()
 	{
 		logger.debug("Updating children of {} from remote", googleFileId);
-		if(children != null && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Children cached, so doibng a remote fetch require a write lock!");
+		if(children != null && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Children cached, so doing a remote fetch requires a write lock!");
 
 		try
 		{
@@ -408,8 +412,9 @@ public class File
 				public Void run(Database arg0) throws Throwable
 				{
 					drive.getDatabase().execute("DELETE FROM RELATIONSHIPS WHERE PARENT=?", googleFileId);
-					for(com.google.api.services.drive.model.File child : googleChildren)
+					for(com.google.api.services.drive.model.File child : googleChildren) {
 						drive.getDatabase().execute("INSERT INTO RELATIONSHIPS(PARENT, CHILD) VALUES(?,?)", getId(), child.getId());
+					}
 					return null;
 				}
 			});
@@ -449,7 +454,7 @@ public class File
 				}
 				catch(Exception e)
 				{
-					// worker is probably shutting down; it was just a convinence update anyway
+					// worker is probably shutting down; it was just a convenience update anyway
 					System.out.println("skipping adding due to: "+e.getMessage());
 				}
 			}
@@ -473,13 +478,17 @@ public class File
 	{
 		if(drive.lock.getReadLockCount() == 0 && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
 		
-		if(metadataAsOfDate != null && metadataAsOfDate >= asof) return; // Bail with no action if the asof date isn't newer.
+		if(metadataAsOfDate != null && metadataAsOfDate >= asof) {
+			return; // Bail with no action if the asof date isn't newer.
+		}
 		
-		if(this.googleFileId != null && !this.googleFileId.equals(file.getId())) throw new Error("File ID Miss-match: "+this.googleFileId+" "+file.getId());
+		if(this.googleFileId != null && !this.googleFileId.equals(file.getId())) {
+			throw new Error("File ID Miss-match: "+this.googleFileId+" "+file.getId());
+		}
 		this.googleFileId = file.getId();
 		
-		GregorianCalendar nextUpdateTimestamp = new GregorianCalendar();
-		nextUpdateTimestamp.add(Calendar.DAY_OF_YEAR, 1);
+//		GregorianCalendar nextUpdateTimestamp = new GregorianCalendar();
+//		nextUpdateTimestamp.add(Calendar.DAY_OF_YEAR, 1);
 		
 		drive.getDatabase().execute(new Transaction<Void>()
 		{
@@ -758,9 +767,9 @@ public class File
     		}
     	}
 		acquireWrite();
-		System.out.println("truncate for " + getTitle());
 		try
 		{
+			System.out.println("truncate for " + getTitle());
 			long oldSize = getSize();
 			dropFragmentsStartingAtOrAfter(offset);
 			// extend by 0 if necessary
@@ -1547,7 +1556,10 @@ public class File
 //			file.freshWrite.set(true);
 			// This actually needs to happen at the time of the write
 		}
-		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
+		else {
+			throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
+		}
+		
 	}
 	
 	String getGoogleId() throws IOException {
@@ -1752,5 +1764,19 @@ public class File
 	private void releaseWrite()
 	{
 		drive.lock.writeLock().unlock();
+	}
+
+	/**
+	 * For now, this just removes the write checking task.
+	 * This prevents dangling references to the file.
+	 */
+	@Override
+	public void close() throws IOException
+	{
+		if (isOpen) {
+			logger.info("closing file " + getTitle());
+			isOpen = false;
+			writeCheckFuture.cancel(false); // don't interrupt an update
+		}
 	}
 }

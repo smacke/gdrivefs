@@ -32,6 +32,7 @@ class DuplicateRejectingList implements List<File>
 	@Override
 	public void add(int index, File element)
 	{
+		if(contains(element)) throw new Error("Duplicate added: "+element);
 		delegate.add(index, new FileReference(element));
 	}
 
