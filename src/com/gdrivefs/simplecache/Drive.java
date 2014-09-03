@@ -138,16 +138,16 @@ public class Drive implements Closeable
 		new java.io.File(home, "uploads").mkdirs();
 		new java.io.File(home, "auth").mkdirs();
 		
-		googleFiles = CacheBuilder.newBuilder()
-				.softValues()
-				.build(new CacheLoader<String, File>(){@Override
-		public File load(String id) throws Exception
-		{
-			// TODO Auto-generated method stub
-			return null;
-		}});
+		googleFiles = CacheBuilder.newBuilder().softValues().build(new CacheLoader<String, File>(){
+			@Override
+			public File load(String id) throws Exception
+			{
+				// TODO Auto-generated method stub
+				return null;
+			}});
 		
-		unsyncedFiles = CacheBuilder.newBuilder().softValues().build(new CacheLoader<UUID, File>(){@Override
+		unsyncedFiles = CacheBuilder.newBuilder().softValues().build(new CacheLoader<UUID, File>(){
+			@Override
 			public File load(UUID id) throws Exception
 			{
 				// TODO Auto-generated method stub
@@ -238,32 +238,34 @@ public class Drive implements Closeable
 			{
 				// If we have a write lock and invalid cache, we can refresh, otherwise schedule an async refresh.
 				final File fileReference = file;
-				if(file.metadataAsOfDate == null) file.refresh(remoteFile, asof);
-				else fileUpdateWorker.execute(new Runnable()
-				{
-					@Override
-					public void run()
+				if(file.metadataAsOfDate == null) {
+					// TODO (smacke): what guarantees that we have a write lock here??
+					// Should that above comment say 'read lock'? I think we only need
+					// a read lock here since we're not changing the state of the world.
+					file.refresh(remoteFile, asof);
+				}
+				else {
+					fileUpdateWorker.execute(new Runnable()
 					{
-						lock.writeLock().lock();
-						try
+						@Override
+						public void run()
 						{
-							fileReference.refresh(remoteFile, asof);
+							lock.writeLock().lock();
+							try
+							{
+								fileReference.refresh(remoteFile, asof);
+							}
+							catch(IOException | SQLException e)
+							{
+								throw new RuntimeException(e);
+							}
+							finally
+							{
+								lock.writeLock().unlock();
+							}
 						}
-						catch(IOException e)
-						{
-							throw new RuntimeException(e);
-						}
-						catch(SQLException e)
-						{
-							throw new RuntimeException(e);
-						}
-						finally
-						{
-							lock.writeLock().unlock();
-						}
-						
-					}
-				});
+					});
+				}
 			}
 			catch(SQLException e)
 			{
@@ -288,7 +290,9 @@ public class Drive implements Closeable
 		lock.readLock().lock();
 		try
 		{
-			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
+			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) {
+				throw new Error("Read or write lock required");
+			}
 			File file = googleFiles.getIfPresent(googleId);
 			if(file != null) return file;
 			file = new File(this, googleId);
@@ -306,7 +310,9 @@ public class Drive implements Closeable
 		lock.readLock().lock();
 		try
 		{
-			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
+			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) {
+				throw new Error("Read or write lock required");
+			}
 			String googleId = File.getGoogleId(this, id);
 			
 			if(googleId != null)
