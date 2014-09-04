@@ -1531,7 +1531,6 @@ public class File implements Closeable
 			final File file = drive.getFile(UUID.fromString(logEntry[0]));
 			final AtomicReference<ConflictingOperationInProgressException> exnCapture = new AtomicReference<>();
 			final AtomicBoolean madeAttemptToGetLock = new AtomicBoolean(false);
-			final com.google.api.services.drive.model.File newRemoteDirectory = drive.getRemote().files().get(file.getId()).execute();
 			// all the fancy locking is mostly unnecessary, since we have # uploader threads
 			// set to 1 currently. The only time it helps is when
 			// we try to trash a file which is in the process of being uploaded.
@@ -1554,7 +1553,7 @@ public class File implements Closeable
 								file.scratchSpaceLock.lock(); // expected behavior: writes to large files during uploads will block,
 																// for those big files only
 								try {
-									file.uploadFileContentsToGoogle(newRemoteDirectory);
+									file.uploadFileContentsToGoogle();
 								} finally {
 									file.scratchSpaceLock.unlock();
 								}
@@ -1741,17 +1740,23 @@ public class File implements Closeable
 	}
 
 	/**
+	 * Preconditions: there already exists a remote file on Google's end with
+	 * this cached File's googleid. By avoiding getting a File from a GET request,
+	 * we make sure not to upload a file with stale metadata.
+	 *
 	 * @param newRemoteDirectory A new Google remote file for which we have called create (synchronously).
 	 * @throws IOException
 	 * @throws SQLException
 	 */
-	void uploadFileContentsToGoogle(com.google.api.services.drive.model.File newRemoteDirectory) throws IOException, SQLException {
+	void uploadFileContentsToGoogle() throws IOException, SQLException {
 		System.out.println("uploading contents of " + getTitle() + " to google");
 		logger.info("uploading contents of {} ({}) to google", getId(), getTitle());
 		String type = Files.probeContentType(Paths.get(getUploadFile().getAbsolutePath()));
 		FileContent mediaContent = new FileContent(type, getUploadFile());
 
-		newRemoteDirectory.setMimeType(type);
+		// will have already been created; don't try to update metadata, just content
+		com.google.api.services.drive.model.File newRemoteDirectory
+		= new com.google.api.services.drive.model.File().setId(getId()).setMimeType(type);
 
 		Date asof = new Date();
 		newRemoteDirectory = drive.getRemote().files().update(getId(), newRemoteDirectory, mediaContent).execute();
