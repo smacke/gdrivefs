@@ -245,7 +245,7 @@ class FileReference
 		File reference = this.reference.get();
 		if(reference != null) return reference;
 		
-		if(reference == null) reference = drive.getCachedFile(googleId);
+		if(reference == null && googleId != null) reference = drive.getCachedFile(googleId);
 		if(reference == null) reference = drive.getFile(internalId);
 		if(reference == null) throw new Error("Assert not reached");
 
