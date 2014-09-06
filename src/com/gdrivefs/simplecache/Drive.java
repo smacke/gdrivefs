@@ -293,6 +293,9 @@ public class Drive implements Closeable
 			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) {
 				throw new Error("Read or write lock required");
 			}
+			if (googleId == null) {
+				throw new Error("Can't get cached file for null googleid");
+			}
 			File file = googleFiles.getIfPresent(googleId);
 			if(file != null) return file;
 			file = new File(this, googleId);
