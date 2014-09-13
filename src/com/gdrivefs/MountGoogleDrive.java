@@ -46,6 +46,9 @@ public class MountGoogleDrive
 		Options options = new Options();
 		options.addOption("t", true, "Filesystem type (always gdrivefs; ignored)");
 		options.addOption("v", false, "Verbose");
+		options.addOption("d", true, "Specify data directory for internal drive state (default: ~/.googlefs/)");
+		options.addOption("c", true, "Specify cache directory (default is inside the data directory; ~/.googlefs/cache/)");
+		options.addOption("a", true, "Specify auth directory (default is inside the data/auth directory; ~/.googlefs/auth/[emailaddress]/)");
 		
 		CommandLineParser parser = new BasicParser();
 		CommandLine cmd = parser.parse(options, args);
@@ -76,7 +79,9 @@ public class MountGoogleDrive
 
 		HttpTransport httpTransport = GoogleNetHttpTransport.newTrustedTransport();
 
-		java.io.File authDirectory = new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "auth");
+		java.io.File dataDirectory = cmd.hasOption('d') ? new java.io.File(cmd.getOptionValue('d')) : new java.io.File(System.getProperty("user.home"), ".googlefs");
+		java.io.File authDirectory = cmd.hasOption('a') ? new java.io.File(cmd.getOptionValue('a')) : new java.io.File(dataDirectory, "auth");
+		java.io.File cacheDirectory = cmd.hasOption('c') ? new java.io.File(cmd.getOptionValue('c')) : new java.io.File(dataDirectory, "cache");
 		
 		if(email != null) new java.io.File(authDirectory, email).mkdirs();
 		
@@ -94,7 +99,7 @@ public class MountGoogleDrive
 		GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(httpTransport, JSON_FACTORY, "930897891601-4mbqrmuu5osvk7j3vlkv8k59liot620f.apps.googleusercontent.com", "v18DcOoqIvmVgPVtisCijpTV", Collections.singleton(DriveScopes.DRIVE)).setCredentialDataStore(credentialDataStore).build();
 		Credential credential = new AuthorizationCodeInstalledApp(flow, new LocalServerReceiver()).authorize("user");
 		
-		java.io.File dbdir = new java.io.File(new java.io.File(new java.io.File(System.getProperty("user.home")), ".googlefs"), "/db");
+		java.io.File dbdir = new java.io.File(dataDirectory, "/db");
 		dbdir.getParentFile().mkdirs();
 
 		com.google.api.services.drive.Drive remote = new com.google.api.services.drive.Drive.Builder(httpTransport, JSON_FACTORY, credential).setApplicationName("GDrive").build();

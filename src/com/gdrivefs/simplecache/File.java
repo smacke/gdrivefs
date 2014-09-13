@@ -68,17 +68,12 @@ public class File implements Closeable
 	final Drive drive;
 
 	// Cache (null indicates field must be fetched from db)
-	Long metadataAsOfDate;
-	Date childrenAsOfDate;
-	Date parentsAsOfDate;
-	String title;
-	String fileMd5;
-	URL downloadUrl;
-	String mimeType;
-	Long size;
-	Timestamp modifiedTime;
 	DuplicateRejectingList children;
 	DuplicateRejectingList parents;
+	Date childrenAsOfDate;
+	Date parentsAsOfDate;
+	SimpleFileMetadata metadata;
+	
 	final Lock uploadLock = new ReentrantLock();
 	final Lock scratchSpaceLock = new ReentrantLock(); // MUST ALWAYS BE ACQUIRED BEFORE WRITELOCK IF ACQUIRED IN SUCCESSION
 	final ExponentialBackOff uploadBackoff = new ExponentialBackOff.Builder()
@@ -136,11 +131,14 @@ public class File implements Closeable
 	/** Reads basic metadata from the cache, throwing an exception if the file metadata isn't in our database **/
 	private void readBasicMetadata() throws IOException
 	{
+		SimpleFileMetadata newMetadata = null;
+		
 		if(googleFileId == null) {
 			if (localFileId == null) {
 				throw new Error("either googleFileId or localFileId must be non-null");
 			}
 			googleFileId = getGoogleId(drive, localFileId);
+			newMetadata = new SimpleFileMetadata(null);
 		}
 
 		if(googleFileId != null)
@@ -158,25 +156,27 @@ public class File implements Closeable
 			}
 
 			DatabaseRow row = rows.get(0);
-			title = row.getString("TITLE");
-			mimeType = row.getString("MIMETYPE");
-			size = row.getLong("SIZE");
-			modifiedTime = row.getTimestamp("MTIME");
-			metadataAsOfDate = row.getTimestamp("METADATAREFRESHED").getTime();
+			newMetadata = new SimpleFileMetadata(row.getTimestamp("METADATAREFRESHED").getTime());
+			newMetadata.title = row.getString("TITLE");
+			newMetadata.mimeType = row.getString("MIMETYPE");
+			newMetadata.size = row.getLong("SIZE");
+			newMetadata.modifiedTime = row.getTimestamp("MTIME");
 			childrenAsOfDate = row.getTimestamp("CHILDRENREFRESHED");
 			parentsAsOfDate = row.getTimestamp("PARENTSREFRESHED");
 			localFileId = row.getUuid("LOCALID");
-			fileMd5 = row.getString("MD5HEX");
-			downloadUrl = row.getString("DOWNLOADURL") != null ? new URL(row.getString("DOWNLOADURL")) : null;
+			newMetadata.fileMd5 = row.getString("MD5HEX");
+			newMetadata.downloadUrl = row.getString("DOWNLOADURL") != null ? new URL(row.getString("DOWNLOADURL")) : null;
 		}
 
-		playLogOnMetadata();  //TODO: Log must be played before data is set to memory
+		playLogOnMetadata(newMetadata);
+		
+		this.metadata = newMetadata;
 	}
 
-	void playLogOnMetadata() throws IOException
+	void playLogOnMetadata(SimpleFileMetadata metadata) throws IOException
 	{
 		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='setTitle' OR COMMAND='mkdir' OR COMMAND='createFile' OR COMMAND='truncate' OR COMMAND='write' OR COMMAND='update' ORDER BY ID ASC"))
-			playOnMetadata(row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
+			playOnMetadata(metadata, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 	}
 
 	static void playLogEntryOnRemote(Drive drive) throws IOException, SQLException
@@ -339,7 +339,7 @@ public class File implements Closeable
 
 			try
 			{
-				if(childrenAsOfDate == null && metadataAsOfDate == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
+				if(childrenAsOfDate == null && metadata == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
 				if(googleFileId == null || childrenAsOfDate != null)
 				{
 					DuplicateRejectingList children = drive.getDatabase().execute(new Transaction<DuplicateRejectingList>()
@@ -478,7 +478,7 @@ public class File implements Closeable
 	{
 		if(drive.lock.getReadLockCount() == 0 && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
 
-		if(metadataAsOfDate != null && metadataAsOfDate >= asof) {
+		if(metadata != null && metadata.metadataAsOfDate >= asof) {
 			return; // Bail with no action if the asof date isn't newer.
 		}
 
@@ -520,13 +520,13 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(title == null) readBasicMetadata();
+			if(metadata == null) readBasicMetadata();
 
 			// Somebody appears to be watching this file; let's keep it up-to-date
 			if(isDirectory()) considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
 			else if(parents != null) for(File file : parents) file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
 
-			return title;
+			return metadata.title;
 		}
 		finally
 		{
@@ -539,8 +539,8 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(mimeType == null) readBasicMetadata();
-			return mimeType;
+			if(metadata == null) readBasicMetadata();
+			return metadata.mimeType;
 		}
 		finally
 		{
@@ -550,8 +550,8 @@ public class File implements Closeable
 
 	Boolean isDirectoryNoIO()
 	{
-		Long asof = metadataAsOfDate;
-		String mimeType = this.mimeType;
+		Long asof = metadata.metadataAsOfDate;
+		String mimeType = metadata.mimeType;
 		if(asof == null && mimeType == null) return null;
 		return MIME_FOLDER.equals(mimeType);
 	}
@@ -561,8 +561,8 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(mimeType == null && metadataAsOfDate == null) readBasicMetadata();
-			return MIME_FOLDER.equals(mimeType);
+			if(metadata == null) readBasicMetadata();
+			return MIME_FOLDER.equals(metadata.mimeType);
 		}
 		finally
 		{
@@ -575,8 +575,8 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(size == null) readBasicMetadata();
-			return size == null ? 0 : size;
+			if(metadata == null) readBasicMetadata();
+			return metadata.size == null ? 0 : metadata.size;
 		}
 		finally
 		{
@@ -589,8 +589,8 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(metadataAsOfDate == null) readBasicMetadata();
-			return new Date(metadataAsOfDate);
+			if(metadata == null) readBasicMetadata();
+			return new Date(metadata.metadataAsOfDate);
 		}
 		finally
 		{
@@ -603,8 +603,8 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(modifiedTime == null) readBasicMetadata();
-			return modifiedTime;
+			if(metadata == null) readBasicMetadata();
+			return metadata.modifiedTime;
 		}
 		finally
 		{
@@ -617,8 +617,8 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(downloadUrl == null) readBasicMetadata();
-			return downloadUrl;
+			if(metadata == null) readBasicMetadata();
+			return metadata.downloadUrl;
 		}
 		finally
 		{
@@ -636,8 +636,8 @@ public class File implements Closeable
 			// Somebody appears to be watching this file; let's keep it up-to-date
 			for(File file : getParents()) file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
 
-			if(fileMd5 == null) readBasicMetadata();
-			return fileMd5;
+			if(metadata == null) readBasicMetadata();
+			return metadata.fileMd5;
 		}
 		finally
 		{
@@ -655,7 +655,7 @@ public class File implements Closeable
 			long creationTime = System.currentTimeMillis();
 
 			playOnDatabase("mkdir", this.getLocalId().toString(), newDirectory.getLocalId().toString(), name, Long.toString(creationTime));
-			playOnMetadata("mkdir", this.getLocalId().toString(), newDirectory.getLocalId().toString(), name, Long.toString(creationTime));
+			playOnMetadata(metadata, "mkdir", this.getLocalId().toString(), newDirectory.getLocalId().toString(), name, Long.toString(creationTime));
 			playOnChildrenList(children, "mkdir", this.getLocalId().toString(), newDirectory.getLocalId().toString(), name, Long.toString(creationTime));
 
 		    return newDirectory;
@@ -674,7 +674,7 @@ public class File implements Closeable
 			File newFile = drive.getFile(UUID.randomUUID());
 			long creationTime = System.currentTimeMillis();
 			playOnDatabase("createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
-			playOnMetadata("createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
+			playOnMetadata(metadata, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
 			playOnChildrenList(children, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
 			playOnParentsList(newFile.parents, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
 
@@ -737,7 +737,7 @@ public class File implements Closeable
 			// uploading it.
 			String[] logEntry = new String[]{this.getLocalId().toString(), Long.toString(getUploadFile().length()), null};
 			playOnDatabase("update", logEntry);
-			playOnMetadata("update", logEntry);
+			playOnMetadata(metadata, "update", logEntry);
 		}
 		finally
 		{
@@ -781,7 +781,7 @@ public class File implements Closeable
 			// extend by 0 if necessary
 			storeFragment(null, oldSize, new byte[(int)Math.max(0, offset-oldSize)]);
 			playOnDatabase("truncate", this.getLocalId().toString(), Long.toString(offset), "null");
-			playOnMetadata("truncate", this.getLocalId().toString(), Long.toString(offset), "null");
+			playOnMetadata(metadata, "truncate", this.getLocalId().toString(), Long.toString(offset), "null");
 		}
 		finally
 		{
@@ -804,7 +804,7 @@ public class File implements Closeable
                 freshWrite.set(true);
                 storeFragment(null, offset, bytes);
                 playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
-                playOnMetadata("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
+                playOnMetadata(metadata, "write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
             }
             finally
             {
@@ -824,7 +824,9 @@ public class File implements Closeable
      */
     protected int downloadFragment(long startPosition, long endPosition) throws IOException
 	{
-    	System.out.println("Downloading for " + getTitle() + " " +fileMd5+" "+startPosition+" "+endPosition);
+    	String md5 = metadata.fileMd5;
+    	
+    	System.out.println("Downloading for " + getTitle() + " " +md5+" "+startPosition+" "+endPosition);
 		if(startPosition > endPosition) throw new IllegalArgumentException("startPosition (" + startPosition + ") must not be greater than endPosition (" + endPosition + ")");
 		if(startPosition > endPosition) throw new IllegalArgumentException("startPosition (" + startPosition + ") must not be greater than endPosition (" + endPosition + ")");
 		if(startPosition == endPosition) return 0;
@@ -847,7 +849,7 @@ public class File implements Closeable
 
         byte[] bytes = out.toByteArray();
 
-        storeFragmentNoMerges(fileMd5, startPosition, bytes);
+        storeFragmentNoMerges(md5, startPosition, bytes);
 
         return bytes.length;
     }
@@ -1170,7 +1172,7 @@ public class File implements Closeable
     /** Writes the action to the database to be replayed on Google's servers later, plays transaction on local memory **/
     void playEverywhere(String command, String... logEntry) throws IOException
     {
-    	playOnMetadata(command, logEntry);
+    	playOnMetadata(metadata, command, logEntry);
     	playOnDatabase(command, logEntry);
     }
 
@@ -1322,16 +1324,16 @@ public class File implements Closeable
 			playOnChildrenList(children, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
 	}
 
-	void playOnMetadata(String command, String... logEntry) throws IOException
+	void playOnMetadata(SimpleFileMetadata metadata, String command, String... logEntry) throws IOException
 	{
 		if("setTitle".equals(command))
 		{
 			// Sanity checks
 			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
-			if(!getTitle().equals(logEntry[1])) new Throwable("WARNING: Title does not match title from logs (expected: " + logEntry[1] + " was: " + getTitle() + ")").printStackTrace();
+			if(!metadata.title.equals(logEntry[1])) new Throwable("WARNING: Title does not match title from logs (expected: " + logEntry[1] + " was: " + getTitle() + ")").printStackTrace();
 
 			// Perform update
-			title = logEntry[2];
+			metadata.title = logEntry[2];
 		}
 		else if("mkdir".equals(command))
 		{
@@ -1339,17 +1341,17 @@ public class File implements Closeable
 			if(!getLocalId().equals(UUID.fromString(logEntry[1]))) return;
 
 			// Perform update
-			title = logEntry[2];
+			metadata.title = logEntry[2];
 
-			mimeType = MIME_FOLDER;
-			size = null;
-			modifiedTime = new Timestamp(Long.parseLong(logEntry[3]));
-			metadataAsOfDate = new Timestamp(Long.parseLong(logEntry[3])).getTime();
+			metadata.mimeType = MIME_FOLDER;
+			metadata.size = null;
+			metadata.modifiedTime = new Timestamp(Long.parseLong(logEntry[3]));
+			metadata.metadataAsOfDate = new Timestamp(Long.parseLong(logEntry[3])).getTime();
 			childrenAsOfDate = null;
 			parentsAsOfDate = null;
 			localFileId = UUID.fromString(logEntry[1]);
-			fileMd5 = null;
-			downloadUrl = null;
+			metadata.fileMd5 = null;
+			metadata.downloadUrl = null;
 		}
 		else if("createFile".equals(command))
 		{
@@ -1357,41 +1359,41 @@ public class File implements Closeable
 			if(!getLocalId().equals(UUID.fromString(logEntry[1]))) return;
 
 			// Perform update
-			title = logEntry[2];
+			metadata.title = logEntry[2];
 
-			mimeType = "application/octet-stream";
-			size = 0L;
-			modifiedTime = new Timestamp(Long.parseLong(logEntry[3]));
-			metadataAsOfDate = new Timestamp(Long.parseLong(logEntry[3])).getTime();
+			metadata.mimeType = "application/octet-stream";
+			metadata.size = 0L;
+			metadata.modifiedTime = new Timestamp(Long.parseLong(logEntry[3]));
+			metadata.metadataAsOfDate = new Timestamp(Long.parseLong(logEntry[3])).getTime();
 			childrenAsOfDate = null;
 			parentsAsOfDate = null;
 			localFileId = UUID.fromString(logEntry[1]);
-			fileMd5 = DigestUtils.md5Hex("");
-			downloadUrl = null;
+			metadata.fileMd5 = DigestUtils.md5Hex("");
+			metadata.downloadUrl = null;
 		}
 		else if("update".equals(command))
 		{
 			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
-			size = Long.parseLong(logEntry[1]);
-			fileMd5 = "null".equals(logEntry[2]) ? null : logEntry[2];
+			metadata.size = Long.parseLong(logEntry[1]);
+			metadata.fileMd5 = "null".equals(logEntry[2]) ? null : logEntry[2];
 		}
 		else if("truncate".equals(command))
 		{
 			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
-			size = Long.parseLong(logEntry[1]);
-			fileMd5 = "null".equals(logEntry[2]) ? null : logEntry[2];
+			metadata.size = Long.parseLong(logEntry[1]);
+			metadata.fileMd5 = "null".equals(logEntry[2]) ? null : logEntry[2];
 		}
 		else if("write".equals(command))
 		{
 			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
 			long offset = Long.parseLong(logEntry[1]);
 			long length = Long.parseLong(logEntry[2]);
-			if (size == null) { // N.B. (smacke): can't call getSize() or we will infinite recurse
-				size = offset+length;
+			if (metadata.size == null) { // N.B. (smacke): can't call getSize() or we will infinite recurse
+				metadata.size = offset+length;
 			} else {
-				size = Math.max(size, offset+length);
+				metadata.size = Math.max(metadata.size, offset+length);
 			}
-			fileMd5 = "null".equals(logEntry[4]) ? null : logEntry[4];
+			metadata.fileMd5 = "null".equals(logEntry[4]) ? null : logEntry[4];
 		}
 		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
@@ -1454,7 +1456,7 @@ public class File implements Closeable
 			try
 			{
 				// Fetching the file by old ID will cause the new google identifier to be found and the cache updated
-				newLocalDirectory.metadataAsOfDate = null;
+				newLocalDirectory.metadata = null;
 				newLocalDirectory.childrenAsOfDate = null;
 				newLocalDirectory.parentsAsOfDate = null;
 				drive.getFile(newRemoteDirectory, asof);
@@ -1497,7 +1499,7 @@ public class File implements Closeable
 			try
 			{
 				// Fetching the file by old ID will cause the new google identifier to be found and the cache updated
-				newLocalDirectory.metadataAsOfDate = null;
+				newLocalDirectory.metadata = null;
 				newLocalDirectory.childrenAsOfDate = null;
 				newLocalDirectory.parentsAsOfDate = null;
 				drive.getFile(newRemoteDirectory, asof);
@@ -1623,7 +1625,7 @@ public class File implements Closeable
 		{
 			if(parents != null) return ImmutableList.copyOf(parents);
 
-			if(parentsAsOfDate == null && metadataAsOfDate == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
+			if(parentsAsOfDate == null && metadata == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
 			if(googleFileId == null || parentsAsOfDate != null)
 			{
 				// Fetch from database
@@ -1774,7 +1776,7 @@ public class File implements Closeable
 	void dropFragmentsFromDb() throws IOException {
 		acquireWrite();
 		try {
-			System.out.println("dropped fragments for file " + title);
+			System.out.println("dropped fragments for file " + (metadata != null ? metadata.title : null));
 			drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE LOCALID=?", getLocalId());
 		} finally {
 			releaseWrite();
@@ -1793,7 +1795,7 @@ public class File implements Closeable
 	@Override
 	public String toString()
 	{
-		return "File(" + googleFileId+", "+localFileId+", "+title + ")";
+		return "File(" + googleFileId+", "+localFileId+", "+(metadata != null ? metadata.title : null) + ")";
 	}
 
 	private void acquireRead()

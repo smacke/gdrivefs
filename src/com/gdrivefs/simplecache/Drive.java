@@ -238,7 +238,7 @@ public class Drive implements Closeable
 			{
 				// If we have a invalid cache, we can refresh, otherwise schedule an async refresh.
 				final File fileReference = file;
-				if(file.metadataAsOfDate == null)
+				if(file.metadata == null)
 				{
 					file.refresh(remoteFile, asof);
 				}
