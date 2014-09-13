@@ -199,7 +199,7 @@ public class Drive implements Closeable
 			String rootId = this.rootId.get();
 			File rootFile = googleFiles.getIfPresent(rootId);
 			if(rootFile != null) return rootFile;
-			rootFile = new File(this, rootId);
+			rootFile = File.fromGoogleId(this, rootId);
 			googleFiles.put(rootId, rootFile);
 			return rootFile;
 		}
@@ -214,7 +214,9 @@ public class Drive implements Closeable
 		lock.readLock().lock();
 		try
 		{
-			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
+			if(lock.getReadLockCount() == 0 && !lock.isWriteLockedByCurrentThread()) {
+				throw new Error("Read or write lock required");
+			}
 			
 			File file = googleFiles.getIfPresent(remoteFile.getId());
 			if(file == null && remoteFile.getProperties() != null) {
@@ -245,18 +247,25 @@ public class Drive implements Closeable
 			}
 			if(file == null)
 			{
-				file = new File(this, remoteFile.getId());
+				file = File.fromGoogleId(this, remoteFile.getId());
 				googleFiles.put(remoteFile.getId(), file);
 			}
 			
 			// Now the file is guaranteed to exist, to be in the google cache, and not in the unsynced map.
+			// TODO (smacke): googleid seems sort of decoupled from the rest
+			// of the metadata now; should we fix this?
+//			if (file.googleFileId == null) {
+//				file.googleFileId = remoteFile.getId();
+//			} else if (!file.googleFileId.equals(remoteFile.getId())) {
+//				throw new Error("file id mismatch!");
+//			}
 			
 			lock.readLock().lock();
 			try
 			{
 				// If we have a invalid cache, we can refresh, otherwise schedule an async refresh.
 				final File fileReference = file;
-				if(file.metadata == null)
+				if(!file.metadata.get().isInited())
 				{
 					file.refresh(remoteFile, asof);
 				}
@@ -315,7 +324,7 @@ public class Drive implements Closeable
 			}
 			File file = googleFiles.getIfPresent(googleId);
 			if(file != null) return file;
-			file = new File(this, googleId);
+			file = File.fromGoogleId(this, googleId);
 			googleFiles.put(googleId, file);
 			return file;
 		}
@@ -355,7 +364,7 @@ public class Drive implements Closeable
 			File file = unsyncedFiles.getIfPresent(id);
 			if(file == null)
 			{
-				file = new File(this, googleId);
+				file = File.fromGoogleId(this, googleId);
 			}
 			googleFiles.put(googleId, file);
 			unsyncedFiles.invalidate(id);
