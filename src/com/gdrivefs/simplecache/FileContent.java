@@ -80,7 +80,7 @@ public class FileContent {
     			"SELECT * FROM FRAGMENTS "
     			+ "WHERE LOCALID=? "
     			+ "ORDER BY STARTBYTE ASC, ENDBYTE DESC",
-    			localFileId.toString());
+    			localFileId);
 
     	try (FileOutputStream out = new FileOutputStream(scratchFile)) {
     		long position = 0;

@@ -40,7 +40,6 @@ import com.google.common.collect.ImmutableList;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.DatabaseRow;
 import com.jimsproch.sql.Transaction;
-import com.sun.istack.internal.NotNull;
 import com.thoughtworks.xstream.XStream;
 
 /**
@@ -59,7 +58,7 @@ public class File implements Closeable
 	private static long WRITE_THRESHOLD_MILLIS = 10000;
 
 	@Nullable String googleFileId;
-	@NotNull UUID localFileId;
+	UUID localFileId;
 	final Drive drive;
 	FileContent content;
 

@@ -153,7 +153,7 @@ public class Drive implements Closeable
 
 		java.io.File home = new java.io.File(System.getProperty("user.home"), ".googlefs");
 		new java.io.File(home, "cache").mkdirs();
-		new java.io.File(home, "uploads").mkdirs();
+		new java.io.File(home, "upload_scratch").mkdirs();
 		new java.io.File(home, "auth").mkdirs();
 		
 		googleFiles = CacheBuilder.newBuilder().softValues().build(new CacheLoader<String, File>(){
