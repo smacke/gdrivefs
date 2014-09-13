@@ -236,15 +236,14 @@ public class Drive implements Closeable
 			lock.readLock().lock();
 			try
 			{
-				// If we have a write lock and invalid cache, we can refresh, otherwise schedule an async refresh.
+				// If we have a invalid cache, we can refresh, otherwise schedule an async refresh.
 				final File fileReference = file;
-				if(file.metadataAsOfDate == null) {
-					// TODO (smacke): what guarantees that we have a write lock here??
-					// Should that above comment say 'read lock'? I think we only need
-					// a read lock here since we're not changing the state of the world.
+				if(file.metadataAsOfDate == null)
+				{
 					file.refresh(remoteFile, asof);
 				}
-				else {
+				else
+				{
 					fileUpdateWorker.execute(new Runnable()
 					{
 						@Override
