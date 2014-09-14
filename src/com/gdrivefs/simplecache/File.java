@@ -201,14 +201,17 @@ public class File implements Closeable
 	public void refresh() throws IOException
 	{
 		logger.debug("Refreshing: {} {}", googleFileId, localFileId);
+
+		if(googleFileId == null) googleFileId = getGoogleId(drive, localFileId);
+		if(googleFileId == null) return;
+
+		Date asof = new Date();
+		if(drive.lock.isWriteLockedByCurrentThread()) throw new Error("Should not be holding write lock while doing network io");
+		com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(googleFileId).execute();
+		
 		acquireWrite();
 		try
 		{
-			if(googleFileId == null) googleFileId = getGoogleId(drive, localFileId);
-			if(googleFileId == null) return;
-
-			Date asof = new Date();
-			com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(googleFileId).execute();
 			try
 			{
 				refresh(metadata, asof);
@@ -260,19 +263,11 @@ public class File implements Closeable
 	 */
 	public void considerSynchronousDirectoryRefresh(long threshold, TimeUnit units) throws IOException
 	{
-		acquireWrite();
-		try
-		{
-			if(!isDirectory()) throw new Error("This method must not be called on non-directories; called on "+googleFileId+"; consider calling method on this file's parent");
+		if(!isDirectory()) throw new Error("This method must not be called on non-directories; called on "+googleFileId+"; consider calling method on this file's parent");
 
-			Date updateThreshold = new Date(System.currentTimeMillis()-units.toMillis(threshold));
-			if(getMetadataDate().before(updateThreshold)) refresh();
-			if(childrenAsOfDate != null && childrenAsOfDate.before(updateThreshold)) refresh();
-		}
-		finally
-		{
-			releaseWrite();
-		}
+		Date updateThreshold = new Date(System.currentTimeMillis()-units.toMillis(threshold));
+		if(getMetadataDate().before(updateThreshold)) refresh();
+		if(childrenAsOfDate != null && childrenAsOfDate.before(updateThreshold)) refresh();
 	}
 
 	/**
