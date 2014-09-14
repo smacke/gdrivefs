@@ -154,7 +154,7 @@ public class File implements Closeable
 			if(rows.size() == 0) {
 				logger.debug("Requesting file metadata from Google for file id: {}", googleFileId);
 				Date asof = new Date();
-				com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(googleFileId).execute();
+				com.google.api.services.drive.model.File metadata = drive.getRemote().getFileMetadata(googleFileId);
 				try { refresh(metadata, asof); }
 				catch(SQLException e) {}
 				rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", googleFileId);
@@ -207,8 +207,7 @@ public class File implements Closeable
 		if(googleFileId == null) return;
 
 		Date asof = new Date();
-		if(drive.lock.isWriteLockedByCurrentThread()) throw new Error("Should not be holding write lock while doing network io");
-		com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(googleFileId).execute();
+		com.google.api.services.drive.model.File metadata = drive.getRemote().getFileMetadata(googleFileId);;
 		
 		acquireWrite();
 		try
@@ -404,17 +403,7 @@ public class File implements Closeable
 		try
 		{
 			final Date childrenUpdateDate = new Date();
-			com.google.api.services.drive.Drive.Files.List lst = drive.getRemote().files().list().setQ("'"+googleFileId+"' in parents and trashed=false");
-			final List<com.google.api.services.drive.model.File> googleChildren = new ArrayList<com.google.api.services.drive.model.File>();
-			do
-			{
-				FileList files = lst.execute();
-				for(com.google.api.services.drive.model.File child : files.getItems()) {
-					googleChildren.add(child);
-				}
-				lst.setPageToken(files.getNextPageToken());
-			} while(lst.getPageToken() != null && lst.getPageToken().length() > 0);
-
+			final List<com.google.api.services.drive.model.File> googleChildren = drive.getRemote().getChildren(googleFileId);
 
 			DuplicateRejectingList children = new DuplicateRejectingList();
 			for(com.google.api.services.drive.model.File child : googleChildren) {
@@ -1089,10 +1078,10 @@ public class File implements Closeable
 			// Perform update
 			String googleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
 			if(googleFileId == null) throw new Error("googleFileId id should not be null at this point for "+logEntry[0]);
-			com.google.api.services.drive.model.File file = drive.getRemote().files().get(googleFileId).execute();
+			com.google.api.services.drive.model.File file = drive.getRemote().getFileMetadata(googleFileId);
 			if(!file.getTitle().equals(logEntry[1]) && !file.getTitle().equals(logEntry[2])) new Throwable("WARNING: Title does not match title from logs (expected: " + logEntry[1] + " was: " + file.getTitle() + ")").printStackTrace();
 			file.setTitle(logEntry[2]);
-			drive.getRemote().files().update(googleFileId, file).execute();
+			drive.getRemote().updateFile(googleFileId, file);
 		}
 		else if("addRelationship".equals(command))
 		{
@@ -1102,16 +1091,14 @@ public class File implements Closeable
 			if(parentGoogleFileId == null) throw new Error("parentGoogleFileId id should not be null at this point for "+logEntry[0]);
 			if(childGoogleFileId == null) throw new Error("childGoogleFileId id should not be null at this point for "+logEntry[1]);
 
-			ParentReference newParent = new ParentReference();
-			newParent.setId(parentGoogleFileId);
-			drive.getRemote().parents().insert(childGoogleFileId, newParent).execute();
+			drive.getRemote().insertParent(childGoogleFileId, parentGoogleFileId);
 		}
 		else if("removeRelationship".equals(command))
 		{
 			String parentGoogleFileId = getGoogleId(drive, UUID.fromString(logEntry[0]));
 			String childGoogleFileId = getGoogleId(drive, UUID.fromString(logEntry[1]));
 
-			drive.getRemote().parents().delete(childGoogleFileId, parentGoogleFileId).execute();
+			drive.getRemote().deleteParent(childGoogleFileId, parentGoogleFileId);
 		}
 		else if("mkdir".equals(command))
 		{
@@ -1129,7 +1116,7 @@ public class File implements Closeable
 
 			File newLocalDirectory = drive.getFile(UUID.fromString(logEntry[1]));
 			Date asof = new Date();
-			newRemoteDirectory = drive.getRemote().files().insert(newRemoteDirectory).execute();
+			newRemoteDirectory = drive.getRemote().insertFile(newRemoteDirectory);
 
 			newLocalDirectory.acquireRead();
 			try { newLocalDirectory.refresh(newRemoteDirectory, asof); }
@@ -1155,11 +1142,11 @@ public class File implements Closeable
 		}
 		else if("createFile".equals(command))
 		{
-			com.google.api.services.drive.model.File newRemoteDirectory = new com.google.api.services.drive.model.File();
-			newRemoteDirectory.setTitle(logEntry[2]);
-			newRemoteDirectory.setDescription("gdrivefsid="+logEntry[1]);
-			newRemoteDirectory.setMimeType("application/octet-stream");
-			newRemoteDirectory.setParents(Arrays.asList(new ParentReference().setId(getGoogleId(drive, UUID.fromString(logEntry[0])))));
+			com.google.api.services.drive.model.File newRemoteFile = new com.google.api.services.drive.model.File();
+			newRemoteFile.setTitle(logEntry[2]);
+			newRemoteFile.setDescription("gdrivefsid="+logEntry[1]);
+			newRemoteFile.setMimeType("application/octet-stream");
+			newRemoteFile.setParents(Arrays.asList(new ParentReference().setId(getGoogleId(drive, UUID.fromString(logEntry[0])))));
 
 			File newLocalDirectory = drive.getFile(UUID.fromString(logEntry[1]));
 
@@ -1167,16 +1154,16 @@ public class File implements Closeable
 			gdrivefsid.setKey("com.gdrivefs.id");
 			gdrivefsid.setValue(logEntry[1]);
 			gdrivefsid.setVisibility("PRIVATE");
-			newRemoteDirectory.setProperties(ImmutableList.of(gdrivefsid));
+			newRemoteFile.setProperties(ImmutableList.of(gdrivefsid));
 
 	//		String type = Files.probeContentType(Paths.get(getUploadFile(newLocalDirectory).getAbsolutePath()));
 	//		FileContent mediaContent = new FileContent(type, getUploadFile(newLocalDirectory));
 
 			Date asof = new Date();
-			newRemoteDirectory = drive.getRemote().files().insert(newRemoteDirectory).execute();
+			newRemoteFile = drive.getRemote().insertFile(newRemoteFile);
 
 			newLocalDirectory.acquireRead();
-			try { newLocalDirectory.refresh(newRemoteDirectory, asof); }
+			try { newLocalDirectory.refresh(newRemoteFile, asof); }
 			finally { newLocalDirectory.releaseRead(); }
 
 			drive.lock.writeLock().lock();
@@ -1186,7 +1173,7 @@ public class File implements Closeable
 				newLocalDirectory.metadata.set(new SimpleFileMetadata());
 				newLocalDirectory.childrenAsOfDate = null;
 				newLocalDirectory.parentsAsOfDate = null;
-				drive.getFile(newRemoteDirectory, asof);
+				drive.getFile(newRemoteFile, asof);
 			}
 			finally
 			{
@@ -1201,7 +1188,7 @@ public class File implements Closeable
                 if (file.uploadLock.tryLock(file.uploadBackoff.nextBackOffMillis(), TimeUnit.MILLISECONDS)) {
                     try {
                     	file.uploadBackoff.reset();
-                        drive.getRemote().files().trash(file.getGoogleId()).execute();
+                        drive.getRemote().trash(file.getGoogleId());
                     } finally {
                         file.uploadLock.unlock();
                     }
@@ -1336,12 +1323,12 @@ public class File implements Closeable
 			throw new Error("Must have read or write lock");
 		}
 		DuplicateRejectingList parents = new DuplicateRejectingList();
-		for(ParentReference parent : drive.getRemote().files().get(googleFileId).execute().getParents())
+		for(ParentReference parent : drive.getRemote().getParents(googleFileId))
 		{
 			int rowsInDb = drive.getDatabase().getInteger("SELECT COUNT(*) FROM FILES WHERE ID=?", parent.getId());
 			Date asof = new Date();
 			if(rowsInDb > 0) parents.add(drive.getCachedFile(parent.getId()));
-			else parents.add(drive.getFile(drive.getRemote().files().get(parent.getId()).execute(), asof));
+			else parents.add(drive.getFile(drive.getRemote().getFileMetadata(parent.getId()), asof));
 		}
 
 		playLogOnParentsList(parents);
@@ -1454,7 +1441,7 @@ public class File implements Closeable
 		= new com.google.api.services.drive.model.File().setId(getId()).setMimeType(type);
 
 		Date asof = new Date();
-		newRemoteDirectory = drive.getRemote().files().update(getId(), newRemoteDirectory, mediaContent).execute();
+		newRemoteDirectory = drive.getRemote().update(getId(), newRemoteDirectory, mediaContent);
 
 		logger.info("done uploading contents of {} ({}) to google", getId(), getTitle());
 

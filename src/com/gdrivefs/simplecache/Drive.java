@@ -38,7 +38,7 @@ public class Drive implements Closeable
 {
 	private Database db;
     private HttpTransport transport;
-	private com.google.api.services.drive.Drive remote;
+	private RemoteDriveWrapper remote;
     Logger logger = LoggerFactory.getLogger(Drive.class);
 	
 	LoadingCache<String, File> googleFiles;
@@ -55,8 +55,7 @@ public class Drive implements Closeable
 		{
 			try
 			{
-				
-				return getRemote().about().get().execute().getRootFolderId();
+				return getRemote().getRootFileId();
 			}
 			catch(IOException e2)
 			{
@@ -147,7 +146,7 @@ public class Drive implements Closeable
 	
 	public Drive(com.google.api.services.drive.Drive remote, HttpTransport transport, Database db)
 	{
-		this.remote = remote;
+		this.remote = new RemoteDriveWrapper(this, remote);
 		this.transport = transport;
 		this.db = db;
 
@@ -174,9 +173,8 @@ public class Drive implements Closeable
 		});
 	}
 	
-	com.google.api.services.drive.Drive getRemote()
+	RemoteDriveWrapper getRemote()
 	{
-	//	new Throwable("Note: Getting remote").printStackTrace();
 		return remote;
 	}
 	
