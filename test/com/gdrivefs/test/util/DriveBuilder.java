@@ -26,6 +26,7 @@ import com.google.api.client.util.ExponentialBackOff;
 import com.google.api.client.util.store.FileDataStoreFactory;
 import com.google.api.services.drive.DriveScopes;
 import com.google.api.services.drive.model.FileList;
+import com.google.common.collect.Lists;
 import com.google.common.io.Files;
 
 public class DriveBuilder implements Closeable
@@ -59,7 +60,8 @@ public class DriveBuilder implements Closeable
 	
 	private com.google.api.services.drive.model.File getTestDirectory() throws IOException
 	{
-		com.google.api.services.drive.Drive.Files.List lst = remote.files().list().setQ("'"+remote.about().get().execute().getRootFolderId()+"' in parents and title='test'");
+		com.google.api.services.drive.Drive.Files.List lst = remote.files().list().setQ(
+				"'"+remote.about().get().execute().getRootFolderId()+"' in parents and title='test'");
 
 		FileList files = lst.execute();
 		List<com.google.api.services.drive.model.File> testdirs = files.getItems();
@@ -88,14 +90,16 @@ public class DriveBuilder implements Closeable
 		{
 			try
 			{
-				com.google.api.services.drive.Drive.Files.List lst = remote.files().list().setQ("'"+testFile.getId()+"' in parents and trashed=false");
+				com.google.api.services.drive.Drive.Files.List lst = 
+						remote.files().list().setQ("'"+testFile.getId()+"' in parents and trashed=false");
 	
-				final List<com.google.api.services.drive.model.File> googleChildren = new ArrayList<com.google.api.services.drive.model.File>();
+				final List<com.google.api.services.drive.model.File> googleChildren = Lists.newArrayList();
 				do
 				{
 					FileList files = lst.execute();
-					for(com.google.api.services.drive.model.File child : files.getItems())
+					for(com.google.api.services.drive.model.File child : files.getItems()) {
 						googleChildren.add(child);
+					}
 					lst.setPageToken(files.getNextPageToken());
 				} while(lst.getPageToken() != null && lst.getPageToken().length() > 0);
 	

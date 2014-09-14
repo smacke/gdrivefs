@@ -1,8 +1,6 @@
 package com.gdrivefs.simplecache;
 
-import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.net.URL;
@@ -23,27 +21,21 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 import javax.annotation.Nullable;
 
 import org.apache.commons.codec.digest.DigestUtils;
-import org.apache.commons.io.FileUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.gdrivefs.ConflictingOperationInProgressException;
-import com.google.api.client.http.FileContent;
-import com.google.api.client.http.GenericUrl;
-import com.google.api.client.http.HttpRequest;
-import com.google.api.client.http.HttpRequestFactory;
-import com.google.api.client.http.HttpResponse;
 import com.google.api.client.util.ExponentialBackOff;
-import com.google.api.client.util.IOUtils;
 import com.google.api.services.drive.model.FileList;
 import com.google.api.services.drive.model.ParentReference;
 import com.google.api.services.drive.model.Property;
+import com.google.common.base.Optional;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.jimsproch.sql.Database;
 import com.jimsproch.sql.DatabaseRow;
@@ -55,27 +47,29 @@ import com.thoughtworks.xstream.XStream;
  * but provides a clean interface for performing reads and writes
  * through the localhost cache layer.
  */
+// TODO (smacke): garbage collection of old cached on-disk fragments
 public class File implements Closeable
 {
     private static Logger logger = LoggerFactory.getLogger(File.class);
-	public static final int FRAGMENT_BOUNDARY = 1<<25; //32 MiB
+
+	public static final String MIME_FOLDER = "application/vnd.google-apps.folder";
 	private static final int MAX_UPDATE_THREADS = 5;
 	static ExecutorService updaterService = Executors.newFixedThreadPool(MAX_UPDATE_THREADS);
 	private static long WRITE_THRESHOLD_MILLIS = 10000;
 
-	String googleFileId;
+	@Nullable String googleFileId;
 	UUID localFileId;
 	final Drive drive;
+	FileContent content;
 
 	// Cache (null indicates field must be fetched from db)
 	DuplicateRejectingList children;
 	DuplicateRejectingList parents;
 	Date childrenAsOfDate;
 	Date parentsAsOfDate;
-	SimpleFileMetadata metadata;
+	AtomicReference<SimpleFileMetadata> metadata;
 	
-	final Lock uploadLock = new ReentrantLock();
-	final Lock scratchSpaceLock = new ReentrantLock(); // MUST ALWAYS BE ACQUIRED BEFORE WRITELOCK IF ACQUIRED IN SUCCESSION
+	final ReentrantLock uploadLock = new ReentrantLock();
 	final ExponentialBackOff uploadBackoff = new ExponentialBackOff.Builder()
 		    .setInitialIntervalMillis(500)
 		    .setMaxElapsedTimeMillis(900000)
@@ -111,42 +105,53 @@ public class File implements Closeable
 	}
 
 	private boolean isOpen = true;
-
-	File(Drive drive, String id)
-	{
-		if(drive == null) throw new NullPointerException("drive must not be null");
-		if(id == null) throw new NullPointerException("id must not be null");
-		this.drive = drive;
-		this.googleFileId = id;
+	
+	public static File fromGoogleId(Drive drive, String googleId) {
+		Preconditions.checkNotNull(drive);
+		Preconditions.checkNotNull(googleId);
+		UUID localFileId;
+		try {
+			localFileId = drive.getDatabase().getUuid("SELECT LOCALID FROM FILES WHERE ID=?", googleId);
+		} catch (NoSuchElementException e) {
+			/* proceed with random uuid; TODO: Parse from description */
+			localFileId = UUID.randomUUID();
+		}
+		return new File(drive, localFileId, googleId);
 	}
 
-	File(Drive drive, UUID id)
-	{
-		if(drive == null) throw new NullPointerException("drive must not be null");
-		if(id == null) throw new NullPointerException("id must not be null");
+	private File(Drive drive, UUID localFileId, String googleId) {
+		this(drive, localFileId);
+		this.googleFileId = googleId;
+	}
+
+	public File(Drive drive, UUID id) {
+		Preconditions.checkNotNull(drive);
+		Preconditions.checkNotNull(id);
 		this.drive = drive;
 		this.localFileId = id;
+		SimpleFileMetadata simpleMetadata = new SimpleFileMetadata();
+		metadata = new AtomicReference<SimpleFileMetadata>(simpleMetadata);
+		this.content = new FileContent(drive, localFileId, metadata);
 	}
 
 	/** Reads basic metadata from the cache, throwing an exception if the file metadata isn't in our database **/
 	private void readBasicMetadata() throws IOException
 	{
-		SimpleFileMetadata newMetadata = null;
+		SimpleFileMetadata newMetadata;
 		
 		if(googleFileId == null) {
 			if (localFileId == null) {
 				throw new Error("either googleFileId or localFileId must be non-null");
 			}
 			googleFileId = getGoogleId(drive, localFileId);
-			newMetadata = new SimpleFileMetadata(null);
-		}
-
-		if(googleFileId != null)
-		{
-			if(drive.lock.getReadLockCount() == 0 && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
-			List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FILES WHERE ID=?", googleFileId);
-			if(rows.size() == 0)
-			{
+			newMetadata = new SimpleFileMetadata();
+		} else { // googleFileId != null
+			if(!hasReadOrWriteLock())  {
+				throw new Error("Read or write lock required");
+			}
+			List<DatabaseRow> rows = drive.getDatabase().getRows(
+					"SELECT * FROM FILES WHERE ID=?", googleFileId);
+			if(rows.size() == 0) {
 				logger.debug("Requesting file metadata from Google for file id: {}", googleFileId);
 				Date asof = new Date();
 				com.google.api.services.drive.model.File metadata = drive.getRemote().files().get(googleFileId).execute();
@@ -156,27 +161,21 @@ public class File implements Closeable
 			}
 
 			DatabaseRow row = rows.get(0);
-			newMetadata = new SimpleFileMetadata(row.getTimestamp("METADATAREFRESHED").getTime());
-			newMetadata.title = row.getString("TITLE");
-			newMetadata.mimeType = row.getString("MIMETYPE");
-			newMetadata.size = row.getLong("SIZE");
-			newMetadata.modifiedTime = row.getTimestamp("MTIME");
+			newMetadata = new SimpleFileMetadata.Builder(row.getTimestamp("METADATAREFRESHED").getTime())
+    			.title(row.getString("TITLE"))
+    			.mimeType(row.getString("MIMETYPE"))
+    			.size(row.getLong("SIZE"))
+    			.lastModified(row.getTimestamp("MTIME"))
+    			.fileMd5(row.getString("MD5HEX"))
+    			.url(row.getString("DOWNLOADURL") != null ? new URL(row.getString("DOWNLOADURL")) : null)
+    			.build();
 			childrenAsOfDate = row.getTimestamp("CHILDRENREFRESHED");
 			parentsAsOfDate = row.getTimestamp("PARENTSREFRESHED");
 			localFileId = row.getUuid("LOCALID");
-			newMetadata.fileMd5 = row.getString("MD5HEX");
-			newMetadata.downloadUrl = row.getString("DOWNLOADURL") != null ? new URL(row.getString("DOWNLOADURL")) : null;
 		}
 
-		playLogOnMetadata(newMetadata);
-		
-		this.metadata = newMetadata;
-	}
-
-	void playLogOnMetadata(SimpleFileMetadata metadata) throws IOException
-	{
-		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='setTitle' OR COMMAND='mkdir' OR COMMAND='createFile' OR COMMAND='truncate' OR COMMAND='write' OR COMMAND='update' ORDER BY ID ASC"))
-			playOnMetadata(metadata, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
+		newMetadata.playLogOnMetadata(this);
+		this.metadata.set(newMetadata);
 	}
 
 	static void playLogEntryOnRemote(Drive drive) throws IOException, SQLException
@@ -185,7 +184,9 @@ public class File implements Closeable
 		try { row = drive.getDatabase().getRow("SELECT * FROM UPDATELOG ORDER BY ID ASC FETCH NEXT ROW ONLY"); }
 		catch(NoSuchElementException e) { /* row doesn't exist; shouldn't happen on modern copies of jimboxutilities (which now just returns null) */ }
 
-		if(row == null) return;  // We're done processing queue, just return (no need to continue poking the log player either).
+		if(row == null) {
+			return;  // We're done processing queue, just return (no need to continue poking the log player either).
+		}
 
 		try {
             playOnRemote(drive, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
@@ -310,9 +311,11 @@ public class File implements Closeable
 	public List<File> getChildren(String title) throws IOException
 	{
 		List<File> children = new ArrayList<File>();
-		for(File child : getChildren())
-			if(title.equals(child.getTitle()))
+		for(File child : getChildren()) {
+			if(title.equals(child.getTitle())) {
 				children.add(child);
+			}
+		}
 		return children;
 	}
 
@@ -324,17 +327,24 @@ public class File implements Closeable
 			if(children != null)
 			{
 				considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
-				for(File child : children)
-					if(child.isDirectory())
+				for(File child : children) {
+					if(child.isDirectory()) {
 						child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+					}
+				}
 				return ImmutableList.copyOf(children);
 			}
 
-			if(!isDirectory()) return ImmutableList.copyOf(children);
+			if(!isDirectory()) {
+				return ImmutableList.copyOf(children);
+			}
 
 			try
 			{
-				if(childrenAsOfDate == null && metadata == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
+				if(childrenAsOfDate == null && !metadata.get().isInited()) {
+					readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
+				}
+				// TODO (smacke): what's the reasoning here exactly??
 				if(googleFileId == null || childrenAsOfDate != null)
 				{
 					DuplicateRejectingList children = drive.getDatabase().execute(new Transaction<DuplicateRejectingList>()
@@ -343,13 +353,17 @@ public class File implements Closeable
 						public DuplicateRejectingList run(Database db) throws Throwable
 						{
 							DuplicateRejectingList children = new DuplicateRejectingList();
-							List<String> files = drive.getDatabase().getStrings("SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", googleFileId);
-							for(String file : files)
+							List<String> files = drive.getDatabase().getStrings(
+									"SELECT CHILD FROM RELATIONSHIPS WHERE PARENT=?", googleFileId);
+							for(String file : files) {
 								children.add(drive.getCachedFile(file));
+							}
 
 							considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
 							for(File child : children)
-								if(child.isDirectory()) child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+								if(child.isDirectory()) {
+									child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+								}
 							return children;
 						}
 					});
@@ -366,9 +380,11 @@ public class File implements Closeable
 
 			updateChildrenFromRemote();
 			considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
-			for(File child : children)
-				if(child.isDirectory())
+			for(File child : children) {
+				if(child.isDirectory()) {
 					child.considerAsyncDirectoryRefresh(30, TimeUnit.MINUTES);
+				}
+			}
 
 			return ImmutableList.copyOf(children);
 		}
@@ -381,7 +397,9 @@ public class File implements Closeable
 	private void updateChildrenFromRemote()
 	{
 		logger.debug("Updating children of {} from remote", googleFileId);
-		if(children != null && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Children cached, so doing a remote fetch requires a write lock!");
+		if(children != null && !hasWriteLock()) {
+			throw new Error("Children cached, so doing a remote fetch requires a write lock!");
+		}
 
 		try
 		{
@@ -391,15 +409,17 @@ public class File implements Closeable
 			do
 			{
 				FileList files = lst.execute();
-				for(com.google.api.services.drive.model.File child : files.getItems())
+				for(com.google.api.services.drive.model.File child : files.getItems()) {
 					googleChildren.add(child);
+				}
 				lst.setPageToken(files.getNextPageToken());
 			} while(lst.getPageToken() != null && lst.getPageToken().length() > 0);
 
 
 			DuplicateRejectingList children = new DuplicateRejectingList();
-			for(com.google.api.services.drive.model.File child : googleChildren)
+			for(com.google.api.services.drive.model.File child : googleChildren) {
 				children.add(drive.getFile(child, childrenUpdateDate));
+			}
 
 			drive.getDatabase().execute(new Transaction<Void>()
 			{
@@ -471,9 +491,11 @@ public class File implements Closeable
 
 	void refresh(final com.google.api.services.drive.model.File file, final long asof) throws IOException, SQLException
 	{
-		if(drive.lock.getReadLockCount() == 0 && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Read or write lock required");
+		if(!hasReadOrWriteLock()) {
+			throw new Error("Read or write lock required");
+		}
 
-		if(metadata != null && metadata.metadataAsOfDate >= asof) {
+		if(metadata.get().isInited() && metadata.get().asOfDate.get() >= asof) {
 			return; // Bail with no action if the asof date isn't newer.
 		}
 
@@ -490,11 +512,6 @@ public class File implements Closeable
 			@Override
 			public Void run(Database db) throws Throwable
 			{
-				if(localFileId == null)
-					try { localFileId = db.getUuid("SELECT LOCALID FROM FILES WHERE ID=?", file.getId()); }
-					catch(NoSuchElementException e) { /* do nothing, proceed with random uuid; TODO: Parse from description */ }
-				if(localFileId == null) localFileId = UUID.randomUUID();
-
 				db.execute("DELETE FROM FILES WHERE ID=?", file.getId());
 				db.execute("INSERT INTO FILES"
 						+ "(ID, LOCALID, TITLE, MIMETYPE, MD5HEX, SIZE, MTIME, DOWNLOADURL, METADATAREFRESHED, CHILDRENREFRESHED) "
@@ -515,13 +532,21 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(metadata == null) readBasicMetadata();
+			if(!metadata.get().isInited()) {
+				readBasicMetadata();
+			}
 
 			// Somebody appears to be watching this file; let's keep it up-to-date
-			if(isDirectory()) considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
-			else if(parents != null) for(File file : parents) file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+			if(isDirectory()) {
+				considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+			}
+			else if(parents != null) {
+				for(File file : parents) {
+					file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
+				}
+			}
 
-			return metadata.title;
+			return metadata.get().title;
 		}
 		finally
 		{
@@ -534,8 +559,10 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(metadata == null) readBasicMetadata();
-			return metadata.mimeType;
+			if(!metadata.get().isInited()) {
+				readBasicMetadata();
+			}
+			return metadata.get().mimeType;
 		}
 		finally
 		{
@@ -545,8 +572,8 @@ public class File implements Closeable
 
 	Boolean isDirectoryNoIO()
 	{
-		Long asof = metadata.metadataAsOfDate;
-		String mimeType = metadata.mimeType;
+		Long asof = metadata.get().asOfDate.get();
+		String mimeType = metadata.get().mimeType;
 		if(asof == null && mimeType == null) return null;
 		return MIME_FOLDER.equals(mimeType);
 	}
@@ -556,8 +583,10 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(metadata == null) readBasicMetadata();
-			return MIME_FOLDER.equals(metadata.mimeType);
+			if(!metadata.get().isInited()) {
+				readBasicMetadata();
+			}
+			return MIME_FOLDER.equals(metadata.get().mimeType);
 		}
 		finally
 		{
@@ -570,8 +599,10 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(metadata == null) readBasicMetadata();
-			return metadata.size == null ? 0 : metadata.size;
+			if(!metadata.get().isInited()) {
+				readBasicMetadata();
+			}
+			return metadata.get().size == null ? 0 : metadata.get().size;
 		}
 		finally
 		{
@@ -584,8 +615,10 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(metadata == null) readBasicMetadata();
-			return new Date(metadata.metadataAsOfDate);
+			if(!metadata.get().isInited()) {
+				readBasicMetadata();
+			}
+			return new Date(metadata.get().asOfDate.get());
 		}
 		finally
 		{
@@ -598,8 +631,10 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(metadata == null) readBasicMetadata();
-			return metadata.modifiedTime;
+			if(!metadata.get().isInited()) {
+				readBasicMetadata();
+			}
+			return metadata.get().modifiedTime;
 		}
 		finally
 		{
@@ -612,8 +647,10 @@ public class File implements Closeable
 		acquireRead();
 		try
 		{
-			if(metadata == null) readBasicMetadata();
-			return metadata.downloadUrl;
+			if(!metadata.get().isInited()) {
+				readBasicMetadata();
+			}
+			return metadata.get().downloadUrl;
 		}
 		finally
 		{
@@ -631,8 +668,10 @@ public class File implements Closeable
 			// Somebody appears to be watching this file; let's keep it up-to-date
 			for(File file : getParents()) file.considerAsyncDirectoryRefresh(10, TimeUnit.MINUTES);
 
-			if(metadata == null) readBasicMetadata();
-			return metadata.fileMd5;
+			if(!metadata.get().isInited()) {
+				readBasicMetadata();
+			}
+			return metadata.get().fileMd5;
 		}
 		finally
 		{
@@ -640,7 +679,6 @@ public class File implements Closeable
 		}
 	}
 
-	private static final String MIME_FOLDER = "application/vnd.google-apps.folder";
 	public File mkdir(String name) throws IOException
 	{
 		acquireWrite();
@@ -650,7 +688,7 @@ public class File implements Closeable
 			long creationTime = System.currentTimeMillis();
 
 			playOnDatabase("mkdir", this.getLocalId().toString(), newDirectory.getLocalId().toString(), name, Long.toString(creationTime));
-			playOnMetadata(metadata, "mkdir", this.getLocalId().toString(), newDirectory.getLocalId().toString(), name, Long.toString(creationTime));
+			metadata.get().playOnInMemoryMetadata(this, "mkdir", this.getLocalId().toString(), newDirectory.getLocalId().toString(), name, Long.toString(creationTime));
 			playOnChildrenList(children, "mkdir", this.getLocalId().toString(), newDirectory.getLocalId().toString(), name, Long.toString(creationTime));
 
 		    return newDirectory;
@@ -669,7 +707,7 @@ public class File implements Closeable
 			File newFile = drive.getFile(UUID.randomUUID());
 			long creationTime = System.currentTimeMillis();
 			playOnDatabase("createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
-			playOnMetadata(metadata, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
+			metadata.get().playOnInMemoryMetadata(this, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
 			playOnChildrenList(children, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
 			playOnParentsList(newFile.parents, "createFile", this.getLocalId().toString(), newFile.getLocalId().toString(), name, Long.toString(creationTime));
 
@@ -680,59 +718,45 @@ public class File implements Closeable
 			releaseWrite();
 		}
 	}
+	
+	public void update(boolean force) throws IOException {
+		update(force, Optional.<Long>absent());
+	}
 
-	public void update(boolean force) throws IOException
+	private void update(boolean force, Optional<Long> forceTruncateSize) throws IOException
 	{
 		if (!force && !freshWrite.getAndSet(false)) {
 			// Nothing has changed (locally at least),
 			// and we're not forcing an upload, so return.
 			return;
 		}
-
-		// TODO this is a hack to prevent any downloads
+		
+		// this is prevents any downloads
 		// from overwriting any writes happening concurrently
-		scratchSpaceLock.lock();
+		String fileMd5;
+		long asofSize;
+		content.scratchSpaceLock().lock();
 		try {
-            fillInGapsBetween(0, getSize());
-            storeFragmentsToUploadFile();
-
-            acquireWrite();
+			asofSize = forceTruncateSize.isPresent() ? forceTruncateSize.get() : getSize();
+            content.fillInGapsBetween(0, asofSize);
+            fileMd5 = content.storeFragmentsToUploadFile();
 		} finally {
-			scratchSpaceLock.unlock();
+            acquireWrite();
+            // by acquiring locks in this order,
+            // this prevents the case where we overwrite
+            // the fileMd5 in the DB with a stale value
+			content.scratchSpaceLock().unlock();
 		}
+
 		try
 		{
-
-			// TODO md5 computation is pretty expensive for large files, actually,
-			// and shouldn't happen behind a writelock. What we really want to do
-			// is keep track of md5's in the fragments table, associating with each
-			// chunk the md5 of the file at the time that chunk was definitely part
-			// of the file. We can then download things not behind any lock, and
-			// detect when things got out of sync while downloading somehow. This will
-			// likely also involve looking up lastModified timestamps to prevent the
-			// situation on the google end where we have A -> B -> A.
-//            FileInputStream stream = new FileInputStream(getUploadFile());
-//            String md5;
-//            try { md5 = DigestUtils.md5Hex(stream); }
-//            finally { stream.close(); }
-//
-//            // don't bother to do the upload if nothing changed
-//            if (md5.equals(fileMd5)) {
-//            	return;
-//            }
-//            // set the new md5
-//            fileMd5 = md5;
-
 			// N.B. (smacke): there's a slight race condition here, in that
 			// by the time the logPlayer starts playing the upload file, somebody
 			// else could have come in and updated the file. This is okay, though -- we'll
-			// just be uploading a more up-to-date file to Google. The only caveat
-			// is that we have to make sure to scratch-space-lock the actual upload
-			// to google as well, since otherwise it could be changing while we're
-			// uploading it.
-			String[] logEntry = new String[]{this.getLocalId().toString(), Long.toString(getUploadFile().length()), null};
+			// just be uploading a more up-to-date file to Google.
+			String[] logEntry = new String[]{this.getLocalId().toString(), Long.toString(asofSize), fileMd5};
 			playOnDatabase("update", logEntry);
-			playOnMetadata(metadata, "update", logEntry);
+			metadata.get().playOnInMemoryMetadata(this, "update", logEntry);
 		}
 		finally
 		{
@@ -746,7 +770,7 @@ public class File implements Closeable
 		try
 		{
 			System.out.printf("read %d bytes at offset %d for file %s\n", size, offset, getTitle());
-			byte[] data = getBytesByAnyMeans(offset, offset + size);
+			byte[] data = content.getBytesByAnyMeans(offset, offset + size);
 			if(data.length != size) throw new Error("expected: " + size + " actual: " + data.length + " " + new String(data));
 			return data;
 		}
@@ -758,30 +782,42 @@ public class File implements Closeable
 
     public void truncate(final long offset) throws IOException
     {
-    	RandomAccessFile uploadFile = null;
+    	Optional<String> truncatedMd5 = Optional.absent();
+    	content.scratchSpaceLock().lock();
     	try {
-    		uploadFile = new RandomAccessFile(getUploadFile(), "rw");
-    		uploadFile.setLength(offset);
+            if (content.getUploadFile().exists()) {
+            	truncatedMd5 = Optional.of(content.storeTruncatedFileToUploadFile(offset));
+            }
     	} finally {
-    		if (uploadFile != null) {
-    			uploadFile.close();
-    		}
+    		content.scratchSpaceLock().unlock();
     	}
-		acquireWrite();
-		try
-		{
-			System.out.println("truncate for " + getTitle());
-			long oldSize = getSize();
-			dropFragmentsStartingAtOrAfter(offset);
-			// extend by 0 if necessary
-			storeFragment(null, oldSize, new byte[(int)Math.max(0, offset-oldSize)]);
-			playOnDatabase("truncate", this.getLocalId().toString(), Long.toString(offset), "null");
-			playOnMetadata(metadata, "truncate", this.getLocalId().toString(), Long.toString(offset), "null");
-		}
-		finally
-		{
-			releaseWrite();
-		}
+    	if (truncatedMd5.isPresent()) {
+            acquireWrite();
+            try {
+                System.out.println("truncate for " + getTitle());
+                long oldSize = getSize();
+                content.dropFragmentsStartingAtOrAfter(offset);
+                // extend by 0 if necessary
+                content.storeFragmentNoMerges(truncatedMd5.get(), oldSize, new byte[(int)Math.max(0, offset-oldSize)]);
+                metadata.get().playOnInMemoryMetadata(this, "truncate", this.getLocalId().toString(), Long.toString(offset), truncatedMd5.get());
+                playOnDatabase("truncate", this.getLocalId().toString(), Long.toString(offset), truncatedMd5.get());
+            }
+            finally {
+                releaseWrite();
+            }
+    	} else {
+    		acquireWrite();
+    		try {
+                long oldSize = getSize();
+                content.dropFragmentsStartingAtOrAfter(offset);
+                // extend by 0 if necessary
+                content.storeFragment(null, oldSize, new byte[(int)Math.max(0, offset-oldSize)]);
+    			metadata.get().playOnInMemoryMetadata(this, "truncate", this.getLocalId().toString(), Long.toString(offset), "null");
+    		} finally {
+    			releaseWrite();
+    		}
+    		update(true, Optional.of(offset));
+    	}
 	}
 
     public void write(byte[] bytes, final long offset) throws IOException
@@ -789,65 +825,28 @@ public class File implements Closeable
     	String chunkMd5 = DigestUtils.md5Hex(bytes);
     	// this way, a download coming in won't overwrite the
     	// things we are about to write to the fragments table.
-    	scratchSpaceLock.lock();
+    	content.scratchSpaceLock().lock();
     	try {
             acquireWrite();
-            try
-            {
-                System.out.printf("write %d bytes at offset %d for file %s\n", bytes.length, offset, getTitle());
-                lastWriteTime = System.currentTimeMillis();
-                freshWrite.set(true);
-                storeFragment(null, offset, bytes);
-                playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
-                playOnMetadata(metadata, "write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
-            }
-            finally
-            {
-                releaseWrite();
-            }
-    	} finally {
-    		scratchSpaceLock.unlock();
     	}
+        finally {
+        	content.scratchSpaceLock().unlock();
+        }
+        try
+        {
+        	System.out.printf("write %d bytes at offset %d for file %s\n", bytes.length, offset, getTitle());
+        	lastWriteTime = System.currentTimeMillis();
+        	freshWrite.set(true);
+        	content.storeFragment(null, offset, bytes);
+        	playOnDatabase("write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
+        	metadata.get().playOnInMemoryMetadata(this, "write", this.getLocalId().toString(), Long.toString(offset), Long.toString(bytes.length), chunkMd5, "null");
+        }
+        finally
+        {
+        	releaseWrite();
+        }
 	}
 
-    /**
-     *
-     * @param startPosition
-     * @param endPosition
-     * @return Number of bytes downloaded.
-     * @throws IOException
-     */
-    protected int downloadFragment(long startPosition, long endPosition) throws IOException
-	{
-    	String md5 = metadata.fileMd5;
-    	
-    	System.out.println("Downloading for " + getTitle() + " " +md5+" "+startPosition+" "+endPosition);
-		if(startPosition > endPosition) throw new IllegalArgumentException("startPosition (" + startPosition + ") must not be greater than endPosition (" + endPosition + ")");
-		if(startPosition > endPosition) throw new IllegalArgumentException("startPosition (" + startPosition + ") must not be greater than endPosition (" + endPosition + ")");
-		if(startPosition == endPosition) return 0;
-
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-
-		HttpRequestFactory requestFactory = drive.getTransport().createRequestFactory(drive.getRemote().getRequestFactory().getInitializer());
-
-		HttpRequest request = requestFactory.buildGetRequest(new GenericUrl(getDownloadUrl()));
-		request.getHeaders().setRange("bytes=" + (startPosition) + "-" + (endPosition - 1));
-		HttpResponse response = request.execute();
-		try
-		{
-			IOUtils.copy(response.getContent(), out);
-		}
-		finally
-		{
-			response.disconnect();
-		}
-
-        byte[] bytes = out.toByteArray();
-
-        storeFragmentNoMerges(md5, startPosition, bytes);
-
-        return bytes.length;
-    }
 
 
 
@@ -856,7 +855,9 @@ public class File implements Closeable
 
     protected byte[] readFragment(String fileMd5, long startPosition, long endPosition, String chunkMd5) throws IOException
     {
-    	if(startPosition >= endPosition) throw new Error("EndPosition ("+endPosition+") should not be greater than StartPosition ("+startPosition+")");
+    	if(startPosition >= endPosition) {
+    		throw new Error("EndPosition ("+endPosition+") should not be greater than StartPosition ("+startPosition+")");
+    	}
     	RandomAccessFile file = new RandomAccessFile(new java.io.File("/home/kyle/.googlefs/cache/"+fileMd5), "r");
     	try
     	{
@@ -878,269 +879,14 @@ public class File implements Closeable
     }
 
 
-    /**
-     * Ideally, this method should only do destructive database ops when write-lock protected.
-     * E.g. anything inserted during a download should not overlap any existing fragments.
-     *
-     * @param fileMd5
-     * @param fragmentStartByte
-     * @param fragment
-     * @throws IOException
-     */
-    private void storeFragment(
-    		@Nullable String fileMd5, // null file md5 indicates that this op is coming in locally and is most up-to-date
-    		long fragmentStartByte,
-    		byte[] fragment) throws IOException {
-    	long start = fragmentStartByte;
-    	long end = fragmentStartByte + fragment.length;
-    	if (fragment.length==0) {
-    		return;
-    	}
-    	System.out.println("store fragment for " + getTitle() + ": start=" + start + ", end=" + end);
-    	// get overlapping fragments
-    	// sort by startbyte asc
-    	// then endbyte desc
-    	// this allows for a slight optimization during merging --
-    	// we use the fragment that spans more data when possible,
-    	// if two fragments start in the same place (fewer I/O calls)
-    	List<DatabaseRow> rows = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS WHERE LOCALID=? AND ((ENDBYTE > ? AND ENDBYTE <= ?) OR (STARTBYTE >= ? AND STARTBYTE < ?) OR (STARTBYTE <= ? AND ENDBYTE >= ?)) ORDER BY STARTBYTE ASC, ENDBYTE DESC", getLocalId().toString(), start, end, start, end, start, end);
-
-    	long globalStartByte = start;
-    	long globalEndByte = end;
-    	for (DatabaseRow row : rows) {
-    		globalEndByte = Math.max(globalEndByte, row.getLong("ENDBYTE"));
-    	}
-
-    	byte[] merged;
-    	if (rows.size() > 0) {
-    		globalStartByte = Math.min(globalStartByte, rows.get(0).getLong("STARTBYTE"));
-    		merged = new byte[(int)(globalEndByte - globalStartByte)];
-
-    		System.arraycopy(fragment, 0, merged, (int)(start-globalStartByte), fragment.length);
-
-    		long position = globalStartByte;
-
-    		// skip the new fragment; we've already done an arraycopy
-    		if (position == start) {
-    			position = end;
-    		}
-    		for (int chunk=0; chunk<rows.size(); chunk++) {
-    			long chunkEnd = rows.get(chunk).getLong("ENDBYTE");
-    			if (position >= chunkEnd) {
-    				continue;
-    			}
-    			String chunkMd5 = rows.get(chunk).getString("CHUNKMD5");
-    			long chunkStart = rows.get(chunk).getLong("STARTBYTE");
-    			if (position < chunkStart) {
-    				throw new Error("inexplicable gap");
-    			}
-    			if (chunkEnd - chunkStart > FRAGMENT_BOUNDARY) {
-    				throw new Error("chunk larger than max google fragment size!");
-    			}
-    			byte[] fileBytes = FileUtils.readFileToByteArray(getCacheFile(chunkMd5));
-    			while (position < chunkEnd) {
-    				merged[(int)(position-globalStartByte)] = fileBytes[(int)(position-chunkStart)];
-    				position++;
-    				// skip the new fragment; we've already done an arraycopy
-    				if (position == start) {
-    					position = end;
-    				}
-    			}
-    		}
-
-    		drive.getDatabase().execute(
-    				"DELETE FROM FRAGMENTS "
-    				+ "WHERE LOCALID=? AND "
-    				+ "((ENDBYTE > ? AND ENDBYTE <= ?) OR "
-    				+ "(STARTBYTE >= ? AND STARTBYTE < ?) OR "
-    				+ "(STARTBYTE <= ? AND ENDBYTE >= ?))",
-    				getLocalId().toString(), start, end, start, end, start, end);
-    	} else {
-    		merged = fragment;
-    	}
-    	storeFragmentNoMerges(fileMd5, globalStartByte, merged);
-    }
-
-    private void storeFragmentNoMerges(
-    		@Nullable String fileMd5, // null file md5 indicates that this op is coming in locally and is most up-to-date
-    		long fragmentStartByte,
-    		byte[] fragment) throws IOException {
-
-    	String chunkMd5 = DigestUtils.md5Hex(fragment);
-    	FileUtils.writeByteArrayToFile(getCacheFile(chunkMd5), fragment);
-    	drive.getDatabase().execute(
-    			"INSERT INTO FRAGMENTS"
-    			+ "(LOCALID, FILEMD5, CHUNKMD5, STARTBYTE, ENDBYTE)"
-    			+ "VALUES(?,?,?,?,?)",
-    			getLocalId(), fileMd5, chunkMd5, fragmentStartByte, fragmentStartByte + fragment.length);
-    }
-
-    private void dropFragmentsStartingAtOrAfter(long offset) throws IOException {
-    	if (!drive.lock.writeLock().isHeldByCurrentThread()) {
-    		throw new Error("need write lock to do writes");
-    	}
-    	drive.getDatabase().execute("DELETE FROM FRAGMENTS "
-    			+ "WHERE LOCALID=? AND STARTBYTE>=?",
-    			getLocalId(), offset);
-    }
-
-	static java.io.File getCacheFile(String chunkMd5)
-	{
-		java.io.File cacheFile = new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "cache");
-		for(byte c : chunkMd5.getBytes()) {
-			cacheFile = new java.io.File(cacheFile, Character.toString((char) c));
-		}
-		cacheFile = new java.io.File(cacheFile, chunkMd5);
-		return cacheFile;
-	}
-
-	private java.io.File getUploadFile() throws IOException
-	{
-		java.io.File uploadFile = new java.io.File(new java.io.File(new java.io.File(new java.io.File(System.getProperty("user.home"), ".googlefs"), "uploads"), getLocalId().toString()), getTitle().replaceAll("/", ""));
-		uploadFile.getParentFile().mkdirs();
-		return uploadFile;
-	}
-
-	void storeFragmentsToUploadFile() throws IOException {
-		java.io.File uploadFile = getUploadFile();
-    	List<DatabaseRow> rows = drive.getDatabase().getRows(
-    			"SELECT * FROM FRAGMENTS "
-    			+ "WHERE LOCALID=? "
-    			+ "ORDER BY STARTBYTE ASC, ENDBYTE DESC",
-    			getLocalId().toString());
-
-    	FileOutputStream out = null;
-    	try {
-    		out = new FileOutputStream(uploadFile);
-    		long position = 0;
-    		for (DatabaseRow row : rows) {
-    			long startByte = row.getLong("STARTBYTE");
-    			if (startByte > position) {
-    				throw new Error("unexpected gap");
-    			}
-    			long endByte = row.getLong("ENDBYTE");
-    			if (endByte <= position) {
-    				continue;
-    			}
-    			byte[] chunk = FileUtils.readFileToByteArray(getCacheFile(row.getString("CHUNKMD5")));
-    			// sanity check
-    			if (chunk.length != endByte-startByte) {
-    				throw new Error("unexpected byte array from file");
-    			}
-    			out.write(chunk, (int)(position-startByte), (int)(endByte-position));
-    			position += (endByte - position);
-    			if (position == getSize()) {
-    				break;
-    			}
-    		}
-    		if (position != getSize()) {
-    			throw new Error("something went wrong reading upload file from fragments");
-    		}
-    	} finally {
-    		if (out != null) {
-    			out.close();
-    		}
-    	}
-	}
-
-	public byte[] getBytesByAnyMeans(long start, long end) throws IOException
-	{
-		// this will be holding a read lock
-		fillInGapsBetween(start, end);
-		byte[] output = new byte[(int)(end-start)];
-		List<DatabaseRow> fragments = drive.getDatabase().getRows(
-				"SELECT * FROM FRAGMENTS "
-				+ "WHERE LOCALID=? AND STARTBYTE < ? AND ENDBYTE > ? "
-				+ "ORDER BY STARTBYTE ASC", getLocalId(), end, start);
-
-		long currentPosition = start;
-		for(DatabaseRow fragment : fragments)
-		{
-			long startbyte = fragment.getInteger("STARTBYTE");
-			long endbyte = fragment.getInteger("ENDBYTE");
-			String chunkMd5 = fragment.getString("CHUNKMD5");
-			java.io.File cachedChunkFile = File.getCacheFile(chunkMd5);
-
-			if(!cachedChunkFile.exists() || cachedChunkFile.length() != endbyte-startbyte)
-			{
-				drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE CHUNKMD5=?", chunkMd5);
-				continue;
-			}
-
-			if (startbyte > currentPosition) {
-				throw new Error("should not have gaps");
-			}
-
-			// Consume the fragment
-			int copyStart = (int)(currentPosition-startbyte);
-			System.out.println("endbyte"+endbyte+" "+"currentPosition"+currentPosition+" "+"startbyte"+startbyte+" "+"readend"+end);
-			int copyEnd = Math.min((int)(endbyte-startbyte), (int)(end-startbyte));
-			System.out.println("readstart"+start+" "+"readend"+end+" "+"copyStart"+copyStart+" "+"copyEnd"+copyEnd+" "+"destpos"+(currentPosition-start)+" "+"length"+(copyEnd-copyStart)+" ");
-			System.out.println("outputlength"+output.length+" "+"fragmentlength"+FileUtils.readFileToByteArray(cachedChunkFile).length);
-			System.arraycopy(FileUtils.readFileToByteArray(cachedChunkFile), copyStart, output, (int)(currentPosition-start), copyEnd-copyStart);
-			currentPosition += copyEnd-copyStart;
-
-			if (currentPosition >= end) {
-				if (currentPosition > end) {
-					throw new Error("should not be reading past end");
-				}
-				break;
-			}
-		}
-
-		if (currentPosition < end) {
-			throw new Error("unexpected gap at end");
-		}
-
-		return output;
-	}
-
-	void fillInGapsBetween(long start, long end) throws IOException
-	{
-		List<DatabaseRow> fragments = drive.getDatabase().getRows("SELECT * FROM FRAGMENTS "
-				+ "WHERE LOCALID=? AND STARTBYTE < ? AND ENDBYTE > ? "
-				+ "ORDER BY STARTBYTE ASC",
-				getLocalId(), end, start);
-
-		long currentPosition = start;
-		for(DatabaseRow fragment : fragments)
-		{
-			long startbyte = fragment.getLong("STARTBYTE");
-			long endbyte = fragment.getLong("ENDBYTE");
-			String chunkMd5 = fragment.getString("CHUNKMD5");
-			java.io.File cachedChunkFile = File.getCacheFile(chunkMd5);
-
-			if(!cachedChunkFile.exists() || cachedChunkFile.length() != endbyte-startbyte)
-			{
-				drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE CHUNKMD5=?", chunkMd5);
-				continue;
-			}
-
-			// If the fragment starts after the byte we need, download the piece we still need
-			// TODO (smacke): If the gap is larger than 32 MiB, need to break it up into chunks.
-			// I think this will never happen with reads, only with updates for files
-			// with > 32 MiB gaps.
-			if(startbyte > currentPosition)
-			{
-				long gapEnd = Math.min(startbyte, end);
-				logger.info("gap discovered for {} ({}) between bytes {} and {}",
-						getGoogleId(), getTitle(), currentPosition, gapEnd);
-				currentPosition += downloadFragment(currentPosition, gapEnd);
-			}
-
-			// Consume the fragment
-			currentPosition += Math.min(endbyte - currentPosition, end - currentPosition);
-		}
-
-		currentPosition += downloadFragment(currentPosition, end);
-	}
-
 	public UUID getLocalId() throws IOException
 	{
 		acquireRead();
 		try
 		{
-			if(localFileId == null) readBasicMetadata();
+			if(localFileId == null) {
+				readBasicMetadata();
+			}
 			return localFileId;
 		}
 		finally
@@ -1152,11 +898,8 @@ public class File implements Closeable
     public void setTitle(String title) throws IOException
     {
     	acquireWrite();
-    	try
-    	{
-    		java.io.File oldCacheLocation = getUploadFile();
+    	try {
 	    	playEverywhere("setTitle", this.getLocalId().toString(), getTitle(), title);
-	    	if(oldCacheLocation.exists()) oldCacheLocation.renameTo(getUploadFile());
     	}
     	finally
     	{
@@ -1167,7 +910,7 @@ public class File implements Closeable
     /** Writes the action to the database to be replayed on Google's servers later, plays transaction on local memory **/
     void playEverywhere(String command, String... logEntry) throws IOException
     {
-    	playOnMetadata(metadata, command, logEntry);
+    	metadata.get().playOnInMemoryMetadata(this, command, logEntry);
     	playOnDatabase(command, logEntry);
     }
 
@@ -1175,7 +918,9 @@ public class File implements Closeable
     void playOnDatabase(String command, String... logEntry)
     {
     	// TODO (smacke): does this actually have to be write-locked?
-    	if(!drive.lock.isWriteLockedByCurrentThread()) throw new Error("Must acquire write lock if you're doing writes!");
+    	if(!hasWriteLock()) {
+    		throw new Error("Must acquire write lock if you're doing writes!");
+    	}
 
     	drive.getDatabase().execute("INSERT INTO UPDATELOG(COMMAND, DETAILS) VALUES(?,?)", command, new XStream().toXML(logEntry));
     	drive.pokeLogPlayer();
@@ -1183,7 +928,9 @@ public class File implements Closeable
 
     private void playOnParentsList(DuplicateRejectingList parents, String command, String... logEntry) throws IOException
     {
-		if(parents == null) return;
+		if(parents == null) {
+			return;
+		}
 
 		if("addRelationship".equals(command))
 		{
@@ -1236,8 +983,15 @@ public class File implements Closeable
 
 	private void playLogOnParentsList(DuplicateRejectingList parents) throws IOException
 	{
-		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' OR COMMAND='mkdir' OR COMMAND='createFile' ORDER BY ID ASC"))
+		for(DatabaseRow row : drive.getDatabase().getRows(
+				"SELECT * FROM UPDATELOG "
+				+ "WHERE COMMAND='addRelationship' OR "
+				+ "COMMAND='removeRelationship' OR "
+				+ "COMMAND='mkdir' OR "
+				+ "COMMAND='createFile' "
+				+ "ORDER BY ID ASC")) {
 			playOnParentsList(parents, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
+		}
 	}
 
 	private void playOnChildrenList(DuplicateRejectingList children, String command, String... logEntry) throws IOException
@@ -1315,82 +1069,16 @@ public class File implements Closeable
 
 	private void playLogOnChildrenList(DuplicateRejectingList children) throws IOException
 	{
-		for(DatabaseRow row : drive.getDatabase().getRows("SELECT * FROM UPDATELOG WHERE COMMAND='addRelationship' OR COMMAND='removeRelationship' OR COMMAND='mkdir' OR COMMAND='createFile' OR COMMAND='trash' ORDER BY ID ASC"))
+		for(DatabaseRow row : drive.getDatabase().getRows(
+				"SELECT * FROM UPDATELOG "
+				+ "WHERE COMMAND='addRelationship' OR "
+				+ "COMMAND='removeRelationship' OR "
+				+ "COMMAND='mkdir' OR "
+				+ "COMMAND='createFile' OR "
+				+ "COMMAND='trash' "
+				+ "ORDER BY ID ASC")) {
 			playOnChildrenList(children, row.getString("COMMAND"), (String[])new XStream().fromXML(row.getString("DETAILS")));
-	}
-
-	void playOnMetadata(SimpleFileMetadata metadata, String command, String... logEntry) throws IOException
-	{
-		if("setTitle".equals(command))
-		{
-			// Sanity checks
-			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
-			if(!metadata.title.equals(logEntry[1])) new Throwable("WARNING: Title does not match title from logs (expected: " + logEntry[1] + " was: " + getTitle() + ")").printStackTrace();
-
-			// Perform update
-			metadata.title = logEntry[2];
 		}
-		else if("mkdir".equals(command))
-		{
-			// Sanity checks
-			if(!getLocalId().equals(UUID.fromString(logEntry[1]))) return;
-
-			// Perform update
-			metadata.title = logEntry[2];
-
-			metadata.mimeType = MIME_FOLDER;
-			metadata.size = null;
-			metadata.modifiedTime = new Timestamp(Long.parseLong(logEntry[3]));
-			metadata.metadataAsOfDate = new Timestamp(Long.parseLong(logEntry[3])).getTime();
-			childrenAsOfDate = null;
-			parentsAsOfDate = null;
-			localFileId = UUID.fromString(logEntry[1]);
-			metadata.fileMd5 = null;
-			metadata.downloadUrl = null;
-		}
-		else if("createFile".equals(command))
-		{
-			// Sanity checks
-			if(!getLocalId().equals(UUID.fromString(logEntry[1]))) return;
-
-			// Perform update
-			metadata.title = logEntry[2];
-
-			metadata.mimeType = "application/octet-stream";
-			metadata.size = 0L;
-			metadata.modifiedTime = new Timestamp(Long.parseLong(logEntry[3]));
-			metadata.metadataAsOfDate = new Timestamp(Long.parseLong(logEntry[3])).getTime();
-			childrenAsOfDate = null;
-			parentsAsOfDate = null;
-			localFileId = UUID.fromString(logEntry[1]);
-			metadata.fileMd5 = DigestUtils.md5Hex("");
-			metadata.downloadUrl = null;
-		}
-		else if("update".equals(command))
-		{
-			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
-			metadata.size = Long.parseLong(logEntry[1]);
-			metadata.fileMd5 = "null".equals(logEntry[2]) ? null : logEntry[2];
-		}
-		else if("truncate".equals(command))
-		{
-			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
-			metadata.size = Long.parseLong(logEntry[1]);
-			metadata.fileMd5 = "null".equals(logEntry[2]) ? null : logEntry[2];
-		}
-		else if("write".equals(command))
-		{
-			if(!getLocalId().equals(UUID.fromString(logEntry[0]))) return;
-			long offset = Long.parseLong(logEntry[1]);
-			long length = Long.parseLong(logEntry[2]);
-			if (metadata.size == null) { // N.B. (smacke): can't call getSize() or we will infinite recurse
-				metadata.size = offset+length;
-			} else {
-				metadata.size = Math.max(metadata.size, offset+length);
-			}
-			metadata.fileMd5 = "null".equals(logEntry[4]) ? null : logEntry[4];
-		}
-		else throw new Error("Unknown log entry: "+Arrays.toString(logEntry));
 	}
 
 	static void playOnRemote(final Drive drive, final String command, final String... logEntry) throws IOException, SQLException, ConflictingOperationInProgressException
@@ -1451,7 +1139,8 @@ public class File implements Closeable
 			try
 			{
 				// Fetching the file by old ID will cause the new google identifier to be found and the cache updated
-				newLocalDirectory.metadata = null;
+				// TODO: is there a more explicit way to trigger a refresh?
+				newLocalDirectory.metadata.set(new SimpleFileMetadata());
 				newLocalDirectory.childrenAsOfDate = null;
 				newLocalDirectory.parentsAsOfDate = null;
 				drive.getFile(newRemoteDirectory, asof);
@@ -1494,7 +1183,7 @@ public class File implements Closeable
 			try
 			{
 				// Fetching the file by old ID will cause the new google identifier to be found and the cache updated
-				newLocalDirectory.metadata = null;
+				newLocalDirectory.metadata.set(new SimpleFileMetadata());
 				newLocalDirectory.childrenAsOfDate = null;
 				newLocalDirectory.parentsAsOfDate = null;
 				drive.getFile(newRemoteDirectory, asof);
@@ -1547,13 +1236,7 @@ public class File implements Closeable
 									file.notify();
 								}
 								file.uploadBackoff.reset();
-								file.scratchSpaceLock.lock(); // expected behavior: writes to large files during uploads will block,
-																// for those big files only
-								try {
-									file.uploadFileContentsToGoogle();
-								} finally {
-									file.scratchSpaceLock.unlock();
-								}
+								file.uploadFileContentsToGoogle();
 							} catch(IOException | SQLException e) {
 								throw new RuntimeException(e);
 							} finally {
@@ -1620,7 +1303,9 @@ public class File implements Closeable
 		{
 			if(parents != null) return ImmutableList.copyOf(parents);
 
-			if(parentsAsOfDate == null && metadata == null) readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
+			if(parentsAsOfDate == null && !metadata.get().isInited()) {
+				readBasicMetadata(); // See if maybe it's just not in the memory cache (DB faster than Google)
+			}
 			if(googleFileId == null || parentsAsOfDate != null)
 			{
 				// Fetch from database
@@ -1644,8 +1329,12 @@ public class File implements Closeable
 
 	private void updateParentsFromRemote() throws IOException
 	{
-		if(parents != null && !drive.lock.isWriteLockedByCurrentThread()) throw new Error("Must have write lock");
-		if(parents == null && !drive.lock.isWriteLockedByCurrentThread() && drive.lock.getReadLockCount() == 0) throw new Error("Must have read or write lock");
+		if(parents != null && !hasWriteLock()) {
+			throw new Error("Must have write lock");
+		}
+		if(parents == null && !hasReadOrWriteLock()) {
+			throw new Error("Must have read or write lock");
+		}
 		DuplicateRejectingList parents = new DuplicateRejectingList();
 		for(ParentReference parent : drive.getRemote().files().get(googleFileId).execute().getParents())
 		{
@@ -1665,9 +1354,13 @@ public class File implements Closeable
 		try
 		{
 			if(child.getParents().contains(this)) return;
-			if(this.equals(child) || parentsContainNode(child)) throw new RuntimeException("Can not add a child to one of the node's parents (direct or indirect)");
+			if(this.equals(child) || parentsContainNode(child)) {
+				throw new RuntimeException("Can not add a child to one of the node's parents (direct or indirect)");
+			}
 
-			if(!isDirectory()) throw new UnsupportedOperationException("Can not add child to non-directory");
+			if(!isDirectory()) {
+				throw new UnsupportedOperationException("Can not add child to non-directory");
+			}
 
 			playOnDatabase("addRelationship", this.getLocalId().toString(), child.getLocalId().toString());
 			playOnChildrenList(children, "addRelationship", this.getLocalId().toString(), child.getLocalId().toString());
@@ -1697,8 +1390,12 @@ public class File implements Closeable
 		acquireWrite();
 		try
 		{
-			if(!this.getChildren().contains(child)) return;
-			if(child.getParents().size() <= 1) throw new UnsupportedOperationException("Child must have at least one parent");
+			if(!this.getChildren().contains(child)) {
+				return;
+			}
+			if(child.getParents().size() <= 1) {
+				throw new UnsupportedOperationException("Child must have at least one parent");
+			}
 
 			playOnDatabase("removeRelationship", this.getLocalId().toString(), child.getLocalId().toString());
 			playOnChildrenList(children, "removeRelationship", this.getLocalId().toString(), child.getLocalId().toString());
@@ -1728,7 +1425,7 @@ public class File implements Closeable
 				try { parent.playOnChildrenList(parent.children, "trash", logEntry); }
 				finally { parent.releaseWrite(); }
 			}
-			dropFragmentsFromDb();
+			content.dropFragmentsFromDb();
 		}
 		finally
 		{
@@ -1739,7 +1436,7 @@ public class File implements Closeable
 	/**
 	 * Preconditions: there already exists a remote file on Google's end with
 	 * this cached File's googleid. By avoiding getting a File from a GET request,
-	 * we make sure not to upload a file with stale metadata.
+	 * we make sure not to upload a file with stale metadata.get().
 	 *
 	 * @param newRemoteDirectory A new Google remote file for which we have called create (synchronously).
 	 * @throws IOException
@@ -1748,8 +1445,9 @@ public class File implements Closeable
 	void uploadFileContentsToGoogle() throws IOException, SQLException {
 		System.out.println("uploading contents of " + getTitle() + " to google");
 		logger.info("uploading contents of {} ({}) to google", getId(), getTitle());
-		String type = Files.probeContentType(Paths.get(getUploadFile().getAbsolutePath()));
-		FileContent mediaContent = new FileContent(type, getUploadFile());
+		java.io.File uploadFile = content.getUploadFile();
+		String type = Files.probeContentType(Paths.get(uploadFile.getAbsolutePath()));
+		com.google.api.client.http.FileContent mediaContent = new com.google.api.client.http.FileContent(type, uploadFile);
 
 		// will have already been created; don't try to update metadata, just content
 		com.google.api.services.drive.model.File newRemoteDirectory
@@ -1768,16 +1466,6 @@ public class File implements Closeable
 		}
 	}
 
-	void dropFragmentsFromDb() throws IOException {
-		acquireWrite();
-		try {
-			System.out.println("dropped fragments for file " + (metadata != null ? metadata.title : null));
-			drive.getDatabase().execute("DELETE FROM FRAGMENTS WHERE LOCALID=?", getLocalId());
-		} finally {
-			releaseWrite();
-		}
-	}
-
 	@Override
 	public boolean equals(Object other)
 	{
@@ -1790,7 +1478,7 @@ public class File implements Closeable
 	@Override
 	public String toString()
 	{
-		return "File(" + googleFileId+", "+localFileId+", "+(metadata != null ? metadata.title : null) + ")";
+		return "File(" + googleFileId+", "+localFileId+", "+(metadata != null ? metadata.get().title : null) + ")";
 	}
 
 	private void acquireRead()
@@ -1811,6 +1499,18 @@ public class File implements Closeable
 	private void releaseWrite()
 	{
 		drive.lock.writeLock().unlock();
+	}
+	
+	private boolean hasReadLock() {
+		return drive.lock.getReadHoldCount() > 0;
+	}
+	
+	private boolean hasWriteLock() {
+		return drive.lock.isWriteLockedByCurrentThread();
+	}
+	
+	private boolean hasReadOrWriteLock() {
+		return hasReadLock() || hasWriteLock();
 	}
 
 	/**

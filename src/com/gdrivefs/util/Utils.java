@@ -1,6 +1,6 @@
 package com.gdrivefs.util;
 
-import com.gdrivefs.simplecache.File;
+import com.gdrivefs.simplecache.FileContent;
 
 public class Utils
 {
@@ -9,6 +9,6 @@ public class Utils
 	}
 	
 	public static long roundUp(long val) {
-		return (val / File.FRAGMENT_BOUNDARY + 1) * File.FRAGMENT_BOUNDARY;
+		return (val / FileContent.FRAGMENT_BOUNDARY + 1) * FileContent.FRAGMENT_BOUNDARY;
 	}
 }
