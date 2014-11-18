@@ -62,7 +62,7 @@ public class MountGoogleDrive
 		}
 		if(cmd.getArgs().length == 2)
 		{
-			email = args[0];
+			email = cmd.getArgs()[0];
 			mountPoint = new java.io.File(cmd.getArgs()[1]);
 		}
 
