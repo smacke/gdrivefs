@@ -3,7 +3,6 @@ package com.gdrivefs.test.util;
 import java.io.Closeable;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -38,6 +37,7 @@ public class DriveBuilder implements Closeable
 	java.io.File mountPoint;
 	GoogleDriveLinuxFs filesystem;
 	String testid;
+	final static String unitTestDirectoryName = "googlefs-unit-test-scratch-space";
 	
 	public DriveBuilder() throws GeneralSecurityException, IOException
 	{
@@ -61,11 +61,12 @@ public class DriveBuilder implements Closeable
 	private com.google.api.services.drive.model.File getTestDirectory() throws IOException
 	{
 		com.google.api.services.drive.Drive.Files.List lst = remote.files().list().setQ(
-				"'"+remote.about().get().execute().getRootFolderId()+"' in parents and title='test'");
+				"'"+remote.about().get().execute().getRootFolderId()+"' in parents and title='"+unitTestDirectoryName+"'");
 
 		FileList files = lst.execute();
 		List<com.google.api.services.drive.model.File> testdirs = files.getItems();
-		if(testdirs.size() != 1) throw new Error("Unexpected number of test directories!");
+		if(testdirs.size() == 0) throw new Error("Could not find directory named '"+unitTestDirectoryName+"' in root of gdrive");
+		if(testdirs.size() != 1) throw new Error("Unexpected number ("+testdirs.size()+") of directories named '"+unitTestDirectoryName+"'");
 		if(lst.getPageToken() != null && lst.getPageToken().length() != 0) throw new Error("Unexpected number of test directories!");
 		return testdirs.get(0);
 	}
@@ -78,7 +79,7 @@ public class DriveBuilder implements Closeable
 		
 		drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
 
-		File testdir = drive.getRoot().getChildren("test").get(0);
+		File testdir = drive.getRoot().getChildren("googlefs-unit-test-scratch-space").get(0);
 		testid = testdir.getId();
 		return testdir;
 	}
@@ -136,7 +137,7 @@ public class DriveBuilder implements Closeable
 		if(testid == null) throw new Error("Must clean up for new test (using cleanTestDir) before reusing directory with new drive");
 
 		drive = new com.gdrivefs.simplecache.Drive(remote, httpTransport);
-		return drive.getRoot().getChildren("test").get(0);
+		return drive.getRoot().getChildren(unitTestDirectoryName).get(0);
 	}
 	
 	private java.io.File mountTestDirectory() throws IOException, UnsatisfiedLinkError, FuseException
@@ -153,7 +154,7 @@ public class DriveBuilder implements Closeable
 		filesystem.getRoot().getChildren();
 		filesystem.getRoot().considerAsyncDirectoryRefresh(1, TimeUnit.HOURS);
 
-		java.io.File testdir = new java.io.File(mountPoint, "test");
+		java.io.File testdir = new java.io.File(mountPoint, unitTestDirectoryName);
 		if(!testdir.exists() || !testdir.isDirectory()) throw new Error("Could not locate test directory");
 
 		return testdir;
