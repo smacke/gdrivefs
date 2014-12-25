@@ -233,7 +233,7 @@ public class GoogleDriveLinuxFs extends FuseFilesystemAdapterAssumeImplemented
 			long chunkStart = offset;
 			long end = offset + Math.min(size,  f.getSize()-offset);
 			do {
-				long chunkEnd = Math.min(Utils.roundUp(chunkStart), end);
+				long chunkEnd = Math.min(Utils.roundUpToFragmentBoundary(chunkStart), end);
 				int len = (int)(chunkEnd - chunkStart);
 				byte[] chunk = f.read(len, chunkStart);
 				buffer.put(chunk);

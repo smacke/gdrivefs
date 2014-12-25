@@ -8,7 +8,7 @@ public class Utils
 		// utilities class
 	}
 	
-	public static long roundUp(long val) {
+	public static long roundUpToFragmentBoundary(long val) {
 		return (val / FileContent.FRAGMENT_BOUNDARY + 1) * FileContent.FRAGMENT_BOUNDARY;
 	}
 }

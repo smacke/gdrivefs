@@ -76,7 +76,7 @@ public class FileWriteCollector
 		delegate.seek(start);
 		long chunkStart = start;
 		do {
-			long chunkEnd = Math.min(Utils.roundUp(chunkStart), stop);
+			long chunkEnd = Math.min(Utils.roundUpToFragmentBoundary(chunkStart), stop);
 			int len = (int)(chunkEnd - chunkStart);
 			byte[] chunk = new byte[len];
 			delegate.read(chunk, 0, len);
