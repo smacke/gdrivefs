@@ -65,7 +65,11 @@ public class DriveBuilder implements Closeable
 
 		FileList files = lst.execute();
 		List<com.google.api.services.drive.model.File> testdirs = files.getItems();
-		if(testdirs.size() == 0) throw new Error("Could not find directory named '"+unitTestDirectoryName+"' in root of gdrive");
+		if(testdirs.size() == 0)
+		{
+			String userEmail = remote.about().get().execute().getUser().getEmailAddress();
+			throw new Error("Could not find directory named '"+unitTestDirectoryName+"' in root of gdrive for "+userEmail);
+		}
 		if(testdirs.size() != 1) throw new Error("Unexpected number ("+testdirs.size()+") of directories named '"+unitTestDirectoryName+"'");
 		if(lst.getPageToken() != null && lst.getPageToken().length() != 0) throw new Error("Unexpected number of test directories!");
 		return testdirs.get(0);
