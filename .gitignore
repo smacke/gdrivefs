@@ -5,3 +5,7 @@ gdrivefs-*.deb
 gdrivefs-*.rpm
 gdrivefs-*.jar
 run
+
+# IntelliJ
+.idea/
+*.iml
