@@ -14,7 +14,6 @@ VERSION=$1
 WORKDIR=$(mktemp -d)
 DEBDIR=$WORKDIR/debian
 cp -r packaging/debian $WORKDIR
-ant -f packaging/package.xml
 mkdir $DEBDIR/usr/lib/
 cp gdrivefs.jar $DEBDIR/usr/lib/gdrivefs-"$VERSION".jar
 cp gdrivefs.jar gdrivefs-"$VERSION".jar
